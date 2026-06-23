@@ -1,0 +1,42 @@
+# Neural Shadow Art — default hyperparameters
+# All values match or are derived from the paper (Pacific Graphics 2025)
+
+model:
+  n_layers: 8           # MLP depth
+  hidden_dim: 256       # channels per layer
+  pos_enc_levels: 6     # L in NeRF-style positional encoding; output dim = 3*(1+2*L)
+
+render:
+  rays_per_pixel: 30    # stratified samples along each ray (K in the paper)
+  frustum_truncation: true
+  bbox_min: [-0.5, -0.5, -0.5]   # scene bounding box
+  bbox_max: [0.5, 0.5, 0.5]
+
+loss:
+  beta_ren: 1.0         # rendering loss weight (β₀)
+  beta_coh: 0.1         # cohesion loss base weight (β₁, scaled early)
+  beta_smo: 0.05        # smoothness loss weight (β₂, activates after epoch 3)
+  beta_vol: 0.01        # volume loss weight (β₃, activates after epoch 3)
+  beta_bin: 0.1         # binarization loss base weight (β₄, scaled early)
+  grad_threshold: 0.01  # θ_w: gradient magnitude threshold for surface detection
+  vol_sigmoid_beta: 100.0  # sharpness of soft-sigmoid approximation in L_vol
+  n_vol_samples: 512    # random points sampled per step for L_vol and L_bin
+  n_smo_samples: 256    # random points sampled per step for L_smo surface detection
+
+train:
+  epochs: 30
+  lr: 0.0001            # MLP learning rate
+  lr_light: 0.001       # learning rate for light dirs and screen normals
+  batch_size_rays: 4096 # total rays per gradient step (split evenly across views)
+  seed: 42
+  checkpoint_every: 5   # save checkpoint every N epochs
+  log_every: 10         # print loss every N steps
+  use_registration: false  # enable rigid registration for incompatible silhouettes
+
+mesh:
+  grid_resolution: 200  # Marching Cubes grid size per axis (paper uses 200)
+  iso_threshold: 0.5    # τ: occupancy threshold for surface extraction
+  output_format: stl    # stl | obj | ply
+  eval_batch_size: 32768  # MLP evaluation batch size for grid (tune for OOM)
+
+device: auto  # auto | cuda | mps | cpu

@@ -1,0 +1,41 @@
+# Fast config for CPU testing — reduced resolution and epoch count
+
+model:
+  n_layers: 4
+  hidden_dim: 128
+  pos_enc_levels: 4
+
+render:
+  rays_per_pixel: 8
+  frustum_truncation: true
+  bbox_min: [-0.5, -0.5, -0.5]
+  bbox_max: [0.5, 0.5, 0.5]
+
+loss:
+  beta_ren: 1.0
+  beta_coh: 0.1
+  beta_smo: 0.05
+  beta_vol: 0.01
+  beta_bin: 0.1
+  grad_threshold: 0.01
+  vol_sigmoid_beta: 100.0
+  n_vol_samples: 128
+  n_smo_samples: 64
+
+train:
+  epochs: 5
+  lr: 0.001
+  lr_light: 0.005
+  batch_size_rays: 512
+  seed: 42
+  checkpoint_every: 5
+  log_every: 5
+  use_registration: false
+
+mesh:
+  grid_resolution: 50
+  iso_threshold: 0.5
+  output_format: obj
+  eval_batch_size: 4096
+
+device: cpu
