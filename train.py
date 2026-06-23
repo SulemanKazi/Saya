@@ -135,7 +135,7 @@ def main() -> None:
         torch.cuda.manual_seed_all(seed)
 
     # --- Dataset ---
-    img_size = args.img_size or 256
+    img_size = args.img_size or cfg.train.img_size
     dataset = ShadowDataset(args.images, img_size=img_size, invert=args.invert)
     print(f"Loaded {dataset.n_views} view(s) at {img_size}×{img_size}")
 

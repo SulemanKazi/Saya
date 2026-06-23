@@ -174,8 +174,8 @@ class RayGenerator:
                 E_j = (oc * e_j).sum(dim=-1)           # (N,)
                 F_j = (bundle.directions[0] * e_j).sum()  # scalar
 
-                U0 = E_j + A_j * (D_j / C_j)         # (N,)
-                U1 = float(F_j - B_j * (D_j / C_j))  # scalar
+                U0 = E_j + A_j * (D_j / C_j)                        # (N,)
+                U1 = (F_j - B_j * (D_j / C_j)).detach().item()  # scalar
 
                 if abs(U1) > eps:
                     t_lo = (-h - U0) / U1  # (N,)

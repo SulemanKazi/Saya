@@ -1,4 +1,5 @@
 # Fast config for CPU testing — reduced resolution and epoch count
+# Uses 64x64 images so each training step covers a larger fraction of pixels.
 
 model:
   n_layers: 4
@@ -6,29 +7,30 @@ model:
   pos_enc_levels: 4
 
 render:
-  rays_per_pixel: 8
+  rays_per_pixel: 16      # more samples per ray for better gradient signal
   frustum_truncation: true
   bbox_min: [-0.5, -0.5, -0.5]
   bbox_max: [0.5, 0.5, 0.5]
 
 loss:
   beta_ren: 1.0
-  beta_coh: 0.1
-  beta_smo: 0.05
+  beta_coh: 0.05
+  beta_smo: 0.0           # disabled — second-order gradients are unstable on small CPU models
   beta_vol: 0.01
-  beta_bin: 0.1
+  beta_bin: 0.05
   grad_threshold: 0.01
   vol_sigmoid_beta: 100.0
   n_vol_samples: 128
-  n_smo_samples: 64
+  n_smo_samples: 32
 
 train:
-  epochs: 5
-  lr: 0.001
-  lr_light: 0.005
+  epochs: 20
+  lr: 0.0005
+  lr_light: 0.002
   batch_size_rays: 512
+  img_size: 64            # 64x64 images → each step sees ~12% of all pixels
   seed: 42
-  checkpoint_every: 5
+  checkpoint_every: 10
   log_every: 5
   use_registration: false
 

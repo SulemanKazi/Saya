@@ -41,6 +41,7 @@ class TrainConfig:
     epochs: int = 30
     lr: float = 1e-4
     lr_light: float = 1e-3
+    img_size: int = 256
     batch_size_rays: int = 4096
     seed: int = 42
     checkpoint_every: int = 5

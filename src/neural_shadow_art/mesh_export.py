@@ -88,11 +88,23 @@ class MarchingCubesMeshExporter:
         print(f"Evaluating occupancy on {self.cfg.mesh.grid_resolution}³ grid …")
         grid = self.evaluate_on_grid(model, device)
 
-        print(f"Running Marching Cubes at threshold {self.cfg.mesh.iso_threshold} …")
-        try:
-            verts, faces, normals, _ = marching_cubes(
-                grid, level=self.cfg.mesh.iso_threshold
+        g_min, g_max = float(grid.min()), float(grid.max())
+        print(f"Occupancy range: [{g_min:.4f}, {g_max:.4f}]")
+
+        threshold = self.cfg.mesh.iso_threshold
+        if not (g_min < threshold < g_max):
+            # Fall back to the midpoint of the actual occupancy range so
+            # Marching Cubes always has a valid surface to extract.
+            threshold = (g_min + g_max) / 2.0
+            print(
+                f"[WARNING] iso_threshold={self.cfg.mesh.iso_threshold} outside data range. "
+                f"Using adaptive threshold={threshold:.4f} instead. "
+                "Train for more epochs to get a properly binarized field."
             )
+
+        print(f"Running Marching Cubes at threshold {threshold:.4f} …")
+        try:
+            verts, faces, normals, _ = marching_cubes(grid, level=threshold)
         except ValueError as e:
             raise ValueError(
                 "Marching Cubes found no surface. "
