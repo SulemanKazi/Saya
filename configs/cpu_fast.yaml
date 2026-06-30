@@ -14,11 +14,11 @@ render:
 
 loss:
   beta_ren: 1.0
-  beta_coh: 0.05
+  beta_coh: 0.001
   beta_smo: 0.0           # disabled — second-order gradients are unstable on small CPU models
-  beta_vol: 0.01
+  beta_vol: 0.0001
   beta_bin: 0.05
-  grad_threshold: 0.01
+  grad_threshold: 0.01    # kept low — small CPU model has weaker gradients than paper's GPU model
   vol_sigmoid_beta: 100.0
   n_vol_samples: 128
   n_smo_samples: 32

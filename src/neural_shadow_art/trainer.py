@@ -141,8 +141,7 @@ class Trainer:
         area_ratios = self.dataset.shadow_area_ratios().to(self.device)
         l_ren_parts = []
         for i in range(n_views):
-            ratio = area_ratios[i].item()
-            weight = 1.0 / (ratio + 1e-4)
+            weight = area_ratios[i].item()  # α = image_area / shadow_bbox_area (paper Eq. 8)
             l_ren_parts.append(
                 loss_rendering(all_pred_occ[i], all_target_occ[i], weight)
             )
@@ -152,16 +151,10 @@ class Trainer:
         per_sample = torch.cat(all_per_sample_occ, dim=0)
         l_coh = loss_cohesion(per_sample)
 
-        # --- Volume + binarization: random scene points ---
-        n_pts = self.cfg.loss.n_vol_samples
-        rand_pts = (
-            torch.rand(n_pts, 3, device=self.device)
-            * (self._bbox_max - self._bbox_min)
-            + self._bbox_min
-        )
-        rand_occ = self.model.occupancy(rand_pts)
-        l_vol = loss_volume(rand_occ, self.cfg.loss.vol_sigmoid_beta)
-        l_bin = loss_binarization(rand_occ)
+        # --- Volume + binarization: use ray sample occupancies (paper Eqs. 15-17) ---
+        ray_occ = torch.cat(all_per_sample_occ, dim=0).reshape(-1)
+        l_vol = loss_volume(ray_occ, self.cfg.loss.vol_sigmoid_beta)
+        l_bin = loss_binarization(ray_occ)
 
         # --- Smoothness loss (L_smo) ---
         weights = self.scheduler.get_weights(epoch)

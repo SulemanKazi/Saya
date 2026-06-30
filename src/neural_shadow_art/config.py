@@ -17,7 +17,7 @@ class ModelConfig:
 
 @dataclass
 class RenderConfig:
-    rays_per_pixel: int = 30
+    rays_per_pixel: int = 256  # paper: n = w (image width)
     frustum_truncation: bool = True
     bbox_min: Tuple[float, float, float] = (-0.5, -0.5, -0.5)
     bbox_max: Tuple[float, float, float] = (0.5, 0.5, 0.5)
@@ -26,11 +26,11 @@ class RenderConfig:
 @dataclass
 class LossConfig:
     beta_ren: float = 1.0
-    beta_coh: float = 0.1
-    beta_smo: float = 0.05
-    beta_vol: float = 0.01
-    beta_bin: float = 0.1
-    grad_threshold: float = 0.01
+    beta_coh: float = 0.001    # paper: 10^-3 (base, scaled by 2^min(epoch,3))
+    beta_smo: float = 0.0001   # paper: 10^-4
+    beta_vol: float = 0.0001   # paper: 10^-4
+    beta_bin: float = 0.05     # paper: 5×10^-2 (base, scaled by 2^min(epoch,3))
+    grad_threshold: float = 0.4  # paper: θ = 0.4 (Eq. 11)
     vol_sigmoid_beta: float = 100.0
     n_vol_samples: int = 512
     n_smo_samples: int = 256

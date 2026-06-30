@@ -56,8 +56,17 @@ class ShadowDataset:
         return (self.img_size, self.img_size)
 
     def shadow_area_ratios(self) -> Tensor:
-        """Fraction of white (shadow) pixels per view, shape (n_views,)."""
-        ratios = [mask.mean().item() for mask in self._masks]
+        """α per view: image_area / shadow_bounding_box_area (paper Eq. 8), shape (n_views,)."""
+        ratios = []
+        for mask in self._masks:
+            rows = mask.any(dim=1).nonzero(as_tuple=False)
+            cols = mask.any(dim=0).nonzero(as_tuple=False)
+            if rows.numel() == 0:
+                ratios.append(1.0)
+                continue
+            h = rows[-1].item() - rows[0].item() + 1
+            w = cols[-1].item() - cols[0].item() + 1
+            ratios.append(float(mask.numel()) / (h * w))
         return torch.tensor(ratios, dtype=torch.float32)
 
     def get_all_masks(self) -> Tensor:
@@ -94,6 +103,8 @@ def _otsu_threshold(arr: np.ndarray) -> float:
         between_var = w0 * w1 * (mu0 - mu1) ** 2
         if between_var > best_var:
             best_var = between_var
-            best_thresh = bin_centers[i]
+            # Use the right edge of this bin as the threshold so that pixels
+            # whose value equals the bin center are classified as background (< threshold).
+            best_thresh = bin_edges[i + 1]
 
     return float(best_thresh)

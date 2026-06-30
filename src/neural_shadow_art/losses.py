@@ -50,7 +50,7 @@ def loss_smoothness(
     bbox_max: tuple,
     grad_threshold: float = 0.01,
     n_samples: int = 256,
-    k_neighbors: int = 8,
+    k_neighbors: int = 6,
 ) -> Tensor:
     """Surface normal consistency loss.
 
@@ -85,8 +85,8 @@ def loss_smoothness(
     if surface_mask.sum() < 2:
         return occ.sum() * 0.0  # keeps graph alive
 
-    surface_pts = pts[surface_mask]  # (S, 3)
-    surface_normals = F.normalize(grad[surface_mask], dim=-1)  # (S, 3)
+    surface_pts = pts[surface_mask]   # (S, 3)
+    surface_grads = grad[surface_mask]  # (S, 3) raw, not normalized (paper Eq. 14)
 
     S = surface_pts.shape[0]
     k = min(k_neighbors, S - 1)
@@ -94,13 +94,14 @@ def loss_smoothness(
     # Pairwise distances for KNN among surface points
     dists = torch.cdist(surface_pts.detach(), surface_pts.detach())  # (S, S)
     dists.fill_diagonal_(float("inf"))
-    _, indices = dists.topk(k, dim=1, largest=False)  # (S, k)
+    knn_dists, indices = dists.topk(k, dim=1, largest=False)  # (S, k) each
 
-    neighbor_normals = surface_normals[indices]           # (S, k, 3)
-    center_normals = surface_normals.unsqueeze(1).expand_as(neighbor_normals)
+    neighbor_grads = surface_grads[indices]                          # (S, k, 3)
+    center_grads = surface_grads.unsqueeze(1).expand_as(neighbor_grads)
+    grad_diff_norm = (center_grads - neighbor_grads).norm(dim=-1)    # (S, k)
 
-    cos_sim = (center_normals * neighbor_normals).sum(dim=-1)  # (S, k)
-    return (1.0 - cos_sim).mean()
+    # Paper Eq. 14: ||∇f(p̂) − ∇f(p)|| / ||p̂ − p|| (finite-difference curvature)
+    return (grad_diff_norm / knn_dists.clamp(min=1e-7)).mean()
 
 
 def loss_volume(
@@ -141,8 +142,8 @@ class LossScheduler:
     Schedule:
     - β_coh (cohesion) and β_bin (binarization) ramp up as 2^min(epoch, 3)
       starting from epoch 0, encouraging solid binary geometry early.
-    - β_smo (smoothness) and β_vol (volume) are suppressed for the first 3
-      epochs so basic geometry can form, then activated at full weight.
+    - β_smo (smoothness) and β_vol (volume) are suppressed for epochs 0–2
+      (paper's first 3 epochs, 1-indexed), then activated at full weight.
     """
 
     def __init__(self, cfg: LossConfig):
@@ -154,8 +155,8 @@ class LossScheduler:
         return {
             "ren": self.cfg.beta_ren,
             "coh": self.cfg.beta_coh * scale_early,
-            "smo": 0.0 if epoch <= 3 else self.cfg.beta_smo,
-            "vol": 0.0 if epoch <= 3 else self.cfg.beta_vol,
+            "smo": 0.0 if epoch < 3 else self.cfg.beta_smo,
+            "vol": 0.0 if epoch < 3 else self.cfg.beta_vol,
             "bin": self.cfg.beta_bin * scale_early,
         }
 

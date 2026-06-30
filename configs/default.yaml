@@ -1,5 +1,4 @@
-# Neural Shadow Art — default hyperparameters
-# All values match or are derived from the paper (Pacific Graphics 2025)
+# Neural Shadow Art — default hyperparameters (Pacific Graphics 2025)
 
 model:
   n_layers: 8           # MLP depth
@@ -7,18 +6,18 @@ model:
   pos_enc_levels: 6     # L in NeRF-style positional encoding; output dim = 3*(1+2*L)
 
 render:
-  rays_per_pixel: 30    # stratified samples along each ray (K in the paper)
+  rays_per_pixel: 256   # paper: n = w samples per ray (= image width for 256×256)
   frustum_truncation: true
   bbox_min: [-0.5, -0.5, -0.5]   # scene bounding box
   bbox_max: [0.5, 0.5, 0.5]
 
 loss:
-  beta_ren: 1.0         # rendering loss weight (β₀)
-  beta_coh: 0.1         # cohesion loss base weight (β₁, scaled early)
-  beta_smo: 0.05        # smoothness loss weight (β₂, activates after epoch 3)
-  beta_vol: 0.01        # volume loss weight (β₃, activates after epoch 3)
-  beta_bin: 0.1         # binarization loss base weight (β₄, scaled early)
-  grad_threshold: 0.01  # θ_w: gradient magnitude threshold for surface detection
+  beta_ren: 1.0           # rendering loss weight (β₀)
+  beta_coh: 0.001         # cohesion base weight (β₁ = 10⁻³, scaled by 2^min(epoch,3))
+  beta_smo: 0.0001        # smoothness weight (β₂ = 10⁻⁴, activates after epoch 3)
+  beta_vol: 0.0001        # volume weight (β₃ = 10⁻⁴, activates after epoch 3)
+  beta_bin: 0.05          # binarization base weight (β₄ = 5×10⁻², scaled by 2^min(epoch,3))
+  grad_threshold: 0.4     # θ_w: gradient magnitude threshold for surface detection (paper θ=0.4)
   vol_sigmoid_beta: 100.0  # sharpness of soft-sigmoid approximation in L_vol
   n_vol_samples: 512    # random points sampled per step for L_vol and L_bin
   n_smo_samples: 256    # random points sampled per step for L_smo surface detection

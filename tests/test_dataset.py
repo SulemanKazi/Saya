@@ -56,7 +56,8 @@ def test_shadow_area_ratios_range():
         ds = ShadowDataset([p], img_size=32)
         ratios = ds.shadow_area_ratios()
         assert ratios.shape == (1,)
-        assert 0.0 <= ratios[0].item() <= 1.0
+        # α = image_area / shadow_bbox_area ≥ 1 (shadow bbox is always ≤ image size)
+        assert ratios[0].item() >= 1.0
 
 
 def test_otsu_threshold_uniform():
@@ -72,4 +73,5 @@ def test_otsu_threshold_bimodal():
     arr[:32, :] = 0.1
     arr[32:, :] = 0.9
     t = _otsu_threshold(arr)
-    assert 0.2 <= t <= 0.8, f"Threshold {t} should be between the two modes"
+    # Threshold must fall strictly between the two modes so each is correctly classified
+    assert 0.1 < t < 0.9, f"Threshold {t} should split the two modes at 0.1 and 0.9"
