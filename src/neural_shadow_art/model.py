@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import math
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -11,10 +9,10 @@ from .config import Config, ModelConfig
 
 
 class PositionalEncoding(nn.Module):
-    """NeRF-style positional encoding.
+    """Positional encoding per paper Eq. 2.
 
     Maps (N, 3) coordinates to (N, 3*(1 + 2*L)) by appending
-    sin(2^k * pi * x) and cos(2^k * pi * x) for k=0..L-1 per coordinate.
+    sin(2^k * x) and cos(2^k * x) for k=0..L-1 per coordinate.
     With L=6 the output dim is 3 + 6*2*3 = 39.
     """
 
@@ -32,23 +30,38 @@ class PositionalEncoding(nn.Module):
         # x: (..., 3)
         encoded = [x]
         for freq in self.freqs:
-            encoded.append(torch.sin(math.pi * freq * x))
-            encoded.append(torch.cos(math.pi * freq * x))
+            encoded.append(torch.sin(freq * x))
+            encoded.append(torch.cos(freq * x))
         return torch.cat(encoded, dim=-1)
 
 
 class OccupancyMLP(nn.Module):
-    """8-layer MLP that maps positionally-encoded 3D coordinates to occupancy in [0,1]."""
+    """MLP that maps positionally-encoded 3D coordinates to occupancy in [0,1].
+
+    n_layers counts all fully connected layers including the final sigmoid
+    output layer (paper: 8 layers, the last with sigmoid instead of ReLU).
+    """
 
     def __init__(self, cfg: ModelConfig):
         super().__init__()
+        if cfg.n_layers < 2:
+            raise ValueError("n_layers must be >= 2 (hidden + output)")
         self.pos_enc = PositionalEncoding(cfg.pos_enc_levels)
         in_dim = self.pos_enc.output_dim
         layers: list[nn.Module] = []
-        for i in range(cfg.n_layers):
+        for i in range(cfg.n_layers - 1):
             layers.append(nn.Linear(in_dim if i == 0 else cfg.hidden_dim, cfg.hidden_dim))
             layers.append(nn.ReLU())
-        layers.append(nn.Linear(cfg.hidden_dim, 1))
+        out_layer = nn.Linear(cfg.hidden_dim, 1)
+        # Start with a near-empty field (f ≈ sigmoid(init_bias) everywhere).
+        # With O = 1 − ∏(1 − f_k), a field initialized at f ≈ 0.5 saturates
+        # every ray (O ≈ 1) and the per-sample gradient ∏_{j≠k}(1 − f_j)
+        # vanishes — for n = w = 256 samples it underflows float32 outright,
+        # freezing training. Near-empty keeps ∏(1 − f_j) ≈ 1 so shadow
+        # constraints can grow geometry.
+        nn.init.normal_(out_layer.weight, std=1e-2)
+        nn.init.constant_(out_layer.bias, cfg.init_bias)
+        layers.append(out_layer)
         layers.append(nn.Sigmoid())
         self.net = nn.Sequential(*layers)
 
@@ -63,16 +76,38 @@ class ShadowArtModel(nn.Module):
     All parameters are in a single state_dict so checkpoints are complete.
     """
 
-    def __init__(self, cfg: Config, n_views: int):
+    # Default initial light directions (direction of travel, source → scene),
+    # used when the user does not supply --light-dirs. Axis-aligned defaults
+    # match the perpendicular configurations used as starting points in the paper.
+    _DEFAULT_DIRS = [
+        (0.0, 0.0, -1.0),
+        (-1.0, 0.0, 0.0),
+        (0.0, -1.0, 0.0),
+        (0.0, 0.0, 1.0),
+        (1.0, 0.0, 0.0),
+        (0.0, 1.0, 0.0),
+    ]
+
+    def __init__(self, cfg: Config, n_views: int, init_light_dirs: Tensor | None = None):
         super().__init__()
         self.mlp = OccupancyMLP(cfg.model)
 
-        # Initialize light directions uniformly on the sphere.
-        # For n_views=2 this gives roughly opposite directions; for more views
-        # they are random. screen_normals start aligned with light directions.
-        init_dirs = F.normalize(torch.randn(n_views, 3), dim=-1)
+        if init_light_dirs is not None:
+            if init_light_dirs.shape != (n_views, 3):
+                raise ValueError(
+                    f"init_light_dirs must have shape ({n_views}, 3), "
+                    f"got {tuple(init_light_dirs.shape)}"
+                )
+            init_dirs = F.normalize(init_light_dirs.float(), dim=-1)
+        elif n_views <= len(self._DEFAULT_DIRS):
+            init_dirs = torch.tensor(self._DEFAULT_DIRS[:n_views])
+        else:
+            init_dirs = F.normalize(torch.randn(n_views, 3), dim=-1)
+
         self.light_dirs = nn.Parameter(init_dirs.clone())
-        self.screen_normals = nn.Parameter(init_dirs.clone())
+        # Screen normals point back toward the object (paper: ⟨l_i, s_i⟩ < 0);
+        # perpendicular light–screen configuration initially.
+        self.screen_normals = nn.Parameter(-init_dirs.clone())
 
     def get_light_dirs(self) -> Tensor:
         """Normalized light directions, (n_views, 3)."""

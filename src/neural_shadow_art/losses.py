@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from typing import Callable
-
 import torch
 import torch.nn.functional as F
 from torch import Tensor
@@ -44,82 +42,142 @@ def loss_cohesion(per_sample_occ: Tensor) -> Tensor:
 
 
 def loss_smoothness(
-    occupancy_fn: Callable[[Tensor], Tensor],
-    device: torch.device,
-    bbox_min: tuple,
-    bbox_max: tuple,
-    grad_threshold: float = 0.01,
-    n_samples: int = 256,
-    k_neighbors: int = 6,
+    sample_points: Tensor,
+    sample_occ: Tensor,
+    img_width: int,
+    theta: float = 0.4,
+    k1: int = 26,
+    k2: int = 6,
+    max_candidates: int = 1024,
 ) -> Tensor:
-    """Surface normal consistency loss.
+    """Surface smoothness loss (paper Eqs. 11-14).
 
-    Samples random points in the scene, identifies surface points via gradient
-    magnitude thresholding, then penalizes normal deviation among k nearest
-    surface neighbors.
+    Follows the paper: occupancy gradients are estimated with least-squares
+    finite differences over the k₁ nearest sample points (Eqs. 12-13) —
+    NOT network autograd, which the paper notes is unstable. Points whose
+    gradient magnitude exceeds θ·w (Eq. 11, w = image width) are surface
+    points; Eq. 14 penalizes the rate of gradient change between each surface
+    point and its k₂ nearest surface neighbors.
+
+    For tractability, candidate points are pre-selected by a cheap along-ray
+    occupancy difference before the full least-squares estimate (the paper
+    processes every batch sample, which is quadratic in batch size).
 
     Args:
-        occupancy_fn: callable (N, 3) → (N, 1).
-        device: target device.
-        bbox_min / bbox_max: scene bounding box corners as tuples.
-        grad_threshold: θ_w — gradient magnitude threshold for surface detection.
-        n_samples: number of random points to sample.
-        k_neighbors: number of nearest neighbors to use.
+        sample_points: (N, K, 3) sample positions on valid truncated rays.
+        sample_occ: (N, K) occupancy at those samples (with autograd graph).
+        img_width: w in Eq. 11.
+        theta: θ in Eq. 11.
+        k1 / k2: neighbor counts for Eqs. 13 / 14.
+        max_candidates: cap on surface candidates per step (cost control).
     Returns:
         Scalar loss (0.0 if fewer than 2 surface points found).
     """
-    bmin = torch.tensor(bbox_min, dtype=torch.float32, device=device)
-    bmax = torch.tensor(bbox_max, dtype=torch.float32, device=device)
+    zero = sample_occ.sum() * 0.0  # keeps graph alive on early exits
+    N, K = sample_occ.shape
+    if N == 0 or K < 5:
+        return zero
 
-    pts = torch.rand(n_samples, 3, device=device) * (bmax - bmin) + bmin
-    pts.requires_grad_(True)
+    pts = sample_points.detach()
+    threshold = theta * img_width
 
-    occ = occupancy_fn(pts)  # (N, 1)
-    grad = torch.autograd.grad(
-        occ.sum(), pts, create_graph=True
-    )[0]  # (N, 3)
+    # 1. Cheap along-ray gradient proxy to find candidate surface crossings.
+    #    Underestimates ‖∇f‖ by the cosine between ray and normal, hence the
+    #    0.5 slack factor in the pre-filter.
+    seg = (pts[:, 2:] - pts[:, :-2]).norm(dim=-1).clamp(min=1e-9)  # (N, K-2)
+    proxy = (sample_occ[:, 2:] - sample_occ[:, :-2]).abs().detach() / seg
+    cand_mask = proxy > 0.5 * threshold  # (N, K-2), index k ↔ sample k+1
 
-    grad_norm = grad.norm(dim=-1)  # (N,)
-    surface_mask = grad_norm > grad_threshold
+    n_cand = int(cand_mask.sum())
+    if n_cand == 0:
+        return zero
+    if n_cand > max_candidates:
+        flat = torch.where(
+            cand_mask.reshape(-1),
+            proxy.reshape(-1),
+            torch.full_like(proxy.reshape(-1), -1.0),
+        )
+        keep = flat.topk(max_candidates).indices
+        cand_ray = keep // (K - 2)
+        cand_k = keep % (K - 2) + 1
+    else:
+        idx = cand_mask.nonzero(as_tuple=False)
+        cand_ray, cand_k = idx[:, 0], idx[:, 1] + 1
 
-    if surface_mask.sum() < 2:
-        return occ.sum() * 0.0  # keeps graph alive
+    C = cand_ray.shape[0]
+    cand_pts = pts[cand_ray, cand_k]         # (C, 3)
+    cand_occ = sample_occ[cand_ray, cand_k]  # (C,)
 
-    surface_pts = pts[surface_mask]   # (S, 3)
-    surface_grads = grad[surface_mask]  # (S, 3) raw, not normalized (paper Eq. 14)
+    # 2. Neighbor pool: candidates plus their ±1/±2 along-ray samples, so the
+    #    least-squares system sees the sharp variation across the surface as
+    #    well as transverse structure from nearby rays.
+    offsets = torch.tensor([-2, -1, 0, 1, 2], device=pts.device)
+    pool_k = (cand_k.unsqueeze(1) + offsets).clamp(0, K - 1)  # (C, 5)
+    pool_ray = cand_ray.unsqueeze(1).expand_as(pool_k)
+    pool_pts = pts[pool_ray.reshape(-1), pool_k.reshape(-1)]          # (5C, 3)
+    pool_occ = sample_occ[pool_ray.reshape(-1), pool_k.reshape(-1)]   # (5C,)
 
-    S = surface_pts.shape[0]
-    k = min(k_neighbors, S - 1)
+    # 3. Least-squares gradient estimate from the k₁ nearest pool points
+    #    (Eqs. 12-13), solved via regularized normal equations.
+    d = torch.cdist(cand_pts, pool_pts)  # (C, 5C)
+    d = torch.where(d < 1e-9, torch.full_like(d, float("inf")), d)  # drop self
+    k1_eff = min(k1, pool_pts.shape[0] - 1)
+    if k1_eff < 3:
+        return zero
+    nn_idx = d.topk(k1_eff, dim=1, largest=False).indices  # (C, k1)
 
-    # Pairwise distances for KNN among surface points
-    dists = torch.cdist(surface_pts.detach(), surface_pts.detach())  # (S, S)
-    dists.fill_diagonal_(float("inf"))
-    knn_dists, indices = dists.topk(k, dim=1, largest=False)  # (S, k) each
+    K_mat = pool_pts[nn_idx] - cand_pts.unsqueeze(1)              # (C, k1, 3)
+    b_vec = (pool_occ[nn_idx] - cand_occ.unsqueeze(1)).unsqueeze(-1)  # (C, k1, 1)
+    KtK = K_mat.transpose(1, 2) @ K_mat                           # (C, 3, 3)
+    Ktb = K_mat.transpose(1, 2) @ b_vec                           # (C, 3, 1)
+    lam = KtK.diagonal(dim1=1, dim2=2).mean(dim=1) * 1e-6 + 1e-12  # (C,)
+    eye = torch.eye(3, device=pts.device).unsqueeze(0)
+    grads = torch.linalg.solve(
+        KtK + lam.view(-1, 1, 1) * eye, Ktb
+    ).squeeze(-1)  # (C, 3)
 
-    neighbor_grads = surface_grads[indices]                          # (S, k, 3)
-    center_grads = surface_grads.unsqueeze(1).expand_as(neighbor_grads)
-    grad_diff_norm = (center_grads - neighbor_grads).norm(dim=-1)    # (S, k)
+    # 4. Surface points via Eq. 11, then the Eq. 14 penalty.
+    surface = grads.norm(dim=-1) > threshold
+    S = int(surface.sum())
+    if S < 2:
+        return zero
 
-    # Paper Eq. 14: ||∇f(p̂) − ∇f(p)|| / ||p̂ − p|| (finite-difference curvature)
-    return (grad_diff_norm / knn_dists.clamp(min=1e-7)).mean()
+    s_pts = cand_pts[surface]
+    s_grads = grads[surface]
+    sd = torch.cdist(s_pts, s_pts)
+    sd.fill_diagonal_(float("inf"))
+    k2_eff = min(k2, S - 1)
+    knn_d, knn_i = sd.topk(k2_eff, dim=1, largest=False)  # (S, k2)
+
+    grad_diff = (s_grads.unsqueeze(1) - s_grads[knn_i]).norm(dim=-1)  # (S, k2)
+    return (grad_diff / knn_d.clamp(min=1e-7)).mean()
 
 
 def loss_volume(
-    occ: Tensor,
+    sample_occ: Tensor,
+    sample_weights: Tensor,
     sigmoid_beta: float = 100.0,
+    tau: float = 0.5,
 ) -> Tensor:
-    """Minimize occupied volume via a differentiable soft-sigmoid approximation.
+    """Differentiable volume approximation (paper Eqs. 15-16).
 
-    Uses sigmoid(β*(f - 0.5)) which approximates a step function at 0.5.
-    With β=100 this is essentially a smooth Heaviside.
+    Each sample's soft occupancy switch sigmoid((f−τ)/T) is weighted by its
+    trapezoid segment length ω, so the per-ray sum approximates the occupied
+    length along the ray; the batch mean approximates total volume.
 
     Args:
-        occ: (N, 1) or (N,) occupancy values from the MLP.
-        sigmoid_beta: sharpness; higher → closer to hard threshold.
+        sample_occ: (N, K) occupancy at samples along each ray.
+        sample_weights: (N, K) segment lengths ω (Eq. 16); 0 for padding.
+        sigmoid_beta: 1/T — sharpness of the soft switch.
+        tau: occupancy threshold τ (matches the reconstruction threshold).
     Returns:
         Scalar loss.
     """
-    return torch.sigmoid(sigmoid_beta * (occ.squeeze(-1) - 0.5)).mean()
+    n_rays = sample_occ.shape[0]
+    if n_rays == 0:
+        return sample_occ.sum() * 0.0
+    soft = torch.sigmoid(sigmoid_beta * (sample_occ - tau))
+    return (sample_weights * soft).sum() / n_rays
 
 
 def loss_binarization(occ: Tensor) -> Tensor:

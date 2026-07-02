@@ -1,12 +1,13 @@
 # Neural Shadow Art — default hyperparameters (Pacific Graphics 2025)
 
 model:
-  n_layers: 8           # MLP depth
+  n_layers: 8           # total FC layers incl. sigmoid output (paper: 8)
   hidden_dim: 256       # channels per layer
-  pos_enc_levels: 6     # L in NeRF-style positional encoding; output dim = 3*(1+2*L)
+  pos_enc_levels: 6     # L in positional encoding (Eq. 2); output dim = 3*(1+2*L)
+  init_bias: -6.0       # initial occupancy logit — field must start near-empty
 
 render:
-  rays_per_pixel: 256   # paper: n = w samples per ray (= image width for 256×256)
+  n_samples_per_ray: null  # null → n = w (image width), as in the paper
   frustum_truncation: true
   bbox_min: [-0.5, -0.5, -0.5]   # scene bounding box
   bbox_max: [0.5, 0.5, 0.5]
@@ -17,20 +18,22 @@ loss:
   beta_smo: 0.0001        # smoothness weight (β₂ = 10⁻⁴, activates after epoch 3)
   beta_vol: 0.0001        # volume weight (β₃ = 10⁻⁴, activates after epoch 3)
   beta_bin: 0.05          # binarization base weight (β₄ = 5×10⁻², scaled by 2^min(epoch,3))
-  grad_threshold: 0.4     # θ_w: gradient magnitude threshold for surface detection (paper θ=0.4)
-  vol_sigmoid_beta: 100.0  # sharpness of soft-sigmoid approximation in L_vol
-  n_vol_samples: 512    # random points sampled per step for L_vol and L_bin
-  n_smo_samples: 256    # random points sampled per step for L_smo surface detection
+  grad_threshold: 0.4     # θ in Eq. 11; surface points satisfy ‖∇f‖ > θ·w
+  vol_sigmoid_beta: 100.0 # 1/T: sharpness of the soft switch in L_vol (Eq. 15)
+  smo_k1: 26              # k₁ neighbors for finite-difference gradients (Eq. 13)
+  smo_k2: 6               # k₂ nearest surface neighbors (Eq. 14)
+  n_smo_samples: 1024     # max surface candidates per step (cost cap for L_smo)
 
 train:
   epochs: 30
   lr: 0.0001            # MLP learning rate
   lr_light: 0.001       # learning rate for light dirs and screen normals
-  batch_size_rays: 4096 # total rays per gradient step (split evenly across views)
+  batch_size_rays: 1024 # total rays per gradient step (split evenly across views)
   seed: 42
   checkpoint_every: 5   # save checkpoint every N epochs
   log_every: 10         # print loss every N steps
-  use_registration: false  # enable rigid registration for incompatible silhouettes
+  use_registration: false  # enable ICP registration for incompatible silhouettes
+  registration_every: 5    # run registration every N epochs (paper Sec. 3.3)
 
 mesh:
   grid_resolution: 200  # Marching Cubes grid size per axis (paper uses 200)

@@ -63,10 +63,15 @@ def parse_args() -> argparse.Namespace:
     # Rendering
     p.add_argument("--img-size", type=int, default=None,
                    help="Resize all input images to this square size")
-    p.add_argument("--rays-per-pixel", type=int, default=None,
-                   help="Stratified samples along each ray (K in the paper)")
+    p.add_argument("--samples-per-ray", type=int, default=None,
+                   help="Stratified samples along each ray "
+                        "(default: image width, i.e. n = w as in the paper)")
     p.add_argument("--no-frustum-truncation", action="store_true",
                    help="Disable ray frustum truncation (ablation mode)")
+    p.add_argument("--light-dirs", nargs="+", default=None, metavar="X,Y,Z",
+                   help="Initial light directions (direction of travel), one "
+                        "comma-separated triple per view, e.g. "
+                        "--light-dirs 0,0,-1 -1,0,0. Default: axis-aligned.")
 
     # Registration
     p.add_argument("--use-registration", action="store_true",
@@ -106,8 +111,8 @@ def apply_cli_overrides(cfg: Config, args: argparse.Namespace) -> Config:
         cfg.train.batch_size_rays = args.batch_size_rays
     if args.seed is not None:
         cfg.train.seed = args.seed
-    if args.rays_per_pixel is not None:
-        cfg.render.rays_per_pixel = args.rays_per_pixel
+    if args.samples_per_ray is not None:
+        cfg.render.n_samples_per_ray = args.samples_per_ray
     if args.no_frustum_truncation:
         cfg.render.frustum_truncation = False
     if args.use_registration:
@@ -119,11 +124,39 @@ def apply_cli_overrides(cfg: Config, args: argparse.Namespace) -> Config:
     return cfg
 
 
+def parse_light_dirs(specs: list[str] | None, n_views: int) -> torch.Tensor | None:
+    """Parse --light-dirs values ('x,y,z' per view) into an (n_views, 3) tensor."""
+    if specs is None:
+        return None
+    if len(specs) != n_views:
+        raise SystemExit(
+            f"--light-dirs needs one x,y,z triple per view "
+            f"({n_views} views, got {len(specs)})"
+        )
+    try:
+        dirs = [[float(c) for c in s.split(",")] for s in specs]
+    except ValueError:
+        raise SystemExit(f"Could not parse --light-dirs {specs}")
+    if any(len(d) != 3 for d in dirs):
+        raise SystemExit("Each --light-dirs entry must have exactly 3 components")
+    return torch.tensor(dirs, dtype=torch.float32)
+
+
 def main() -> None:
     args = parse_args()
 
     # --- Config ---
-    cfg = load_config(args.config)
+    payload = None
+    if args.resume:
+        payload = torch.load(args.resume, map_location="cpu", weights_only=False)
+
+    if args.config is not None:
+        cfg = load_config(args.config)
+    elif payload is not None and payload.get("config") is not None:
+        # Resume with the exact config stored in the checkpoint
+        cfg = payload["config"]
+    else:
+        cfg = load_config(None)
     cfg = apply_cli_overrides(cfg, args)
 
     # --- Reproducibility ---
@@ -150,12 +183,17 @@ def main() -> None:
 
     # --- Model ---
     start_epoch = 0
-    if args.resume:
+    if payload is not None:
         print(f"Resuming from checkpoint: {args.resume}")
-        model, start_epoch, payload = Trainer.load_checkpoint(args.resume, cfg)
+        model = ShadowArtModel(cfg, n_views=payload["n_views"])
+        model.load_state_dict(payload["model_state"])
+        start_epoch = payload["epoch"]
         print(f"  → resuming at epoch {start_epoch}")
     else:
-        model = ShadowArtModel(cfg, n_views=dataset.n_views)
+        init_dirs = parse_light_dirs(args.light_dirs, dataset.n_views)
+        model = ShadowArtModel(
+            cfg, n_views=dataset.n_views, init_light_dirs=init_dirs
+        )
 
     # --- Registration ---
     registration = (
@@ -163,6 +201,12 @@ def main() -> None:
         if cfg.train.use_registration
         else None
     )
+    if (
+        registration is not None
+        and payload is not None
+        and "registration_state" in payload
+    ):
+        registration.load_state_dict(payload["registration_state"])
 
     # --- Trainer ---
     trainer = Trainer(
@@ -173,7 +217,7 @@ def main() -> None:
         registration=registration,
     )
 
-    if args.resume and "optimizer_state" in payload:
+    if payload is not None and "optimizer_state" in payload:
         trainer.optimizer.load_state_dict(payload["optimizer_state"])
 
     trainer.train(start_epoch=start_epoch)

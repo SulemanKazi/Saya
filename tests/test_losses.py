@@ -46,9 +46,19 @@ def test_cohesion_positive_on_alternating():
 
 
 def test_volume_loss_increases_with_occupancy():
-    low_occ = torch.full((20, 1), 0.1)
-    high_occ = torch.full((20, 1), 0.9)
-    assert loss_volume(high_occ).item() > loss_volume(low_occ).item()
+    weights = torch.full((4, 5), 0.1)
+    low_occ = torch.full((4, 5), 0.1)
+    high_occ = torch.full((4, 5), 0.9)
+    assert loss_volume(high_occ, weights).item() > loss_volume(low_occ, weights).item()
+
+
+def test_volume_loss_scales_with_segment_length():
+    # Same occupancy but doubled segment lengths → doubled volume (Eq. 15-16)
+    occ = torch.full((4, 5), 0.9)
+    w1 = torch.full((4, 5), 0.1)
+    v1 = loss_volume(occ, w1).item()
+    v2 = loss_volume(occ, 2.0 * w1).item()
+    assert v2 == pytest.approx(2.0 * v1, rel=1e-5)
 
 
 def test_loss_scheduler_weights_epoch0():
@@ -97,18 +107,54 @@ def test_loss_scheduler_total():
     assert total.item() > 0.0
 
 
-def make_simple_occupancy_fn(device):
-    """A simple density function for testing: sphere at origin."""
-    def fn(pts: torch.Tensor) -> torch.Tensor:
-        r = pts.norm(dim=-1, keepdim=True)
-        return torch.sigmoid(10.0 * (0.3 - r))
-    return fn
+def make_ray_samples(n_rays=64, k=64, steepness=400.0, seed=0):
+    """Synthetic ray samples crossing a sharp planar surface at z = 0.
+
+    Rays travel along +z through the unit cube; occupancy is a steep sigmoid
+    of z, mimicking a converged binary field.
+    """
+    g = torch.Generator().manual_seed(seed)
+    xy = torch.rand(n_rays, 1, 2, generator=g) - 0.5           # (N, 1, 2)
+    z = torch.linspace(-0.5, 0.5, k).reshape(1, k, 1).expand(n_rays, k, 1)
+    points = torch.cat([xy.expand(n_rays, k, 2), z], dim=-1)   # (N, K, 3)
+    occ = torch.sigmoid(steepness * z.squeeze(-1))             # (N, K)
+    return points, occ
 
 
-def test_smoothness_loss_runs():
-    device = torch.device("cpu")
-    fn = make_simple_occupancy_fn(device)
-    val = loss_smoothness(fn, device, (-0.5, -0.5, -0.5), (0.5, 0.5, 0.5),
-                          n_samples=32, k_neighbors=4)
+def test_smoothness_zero_on_uniform_field():
+    points, _ = make_ray_samples()
+    occ = torch.full(points.shape[:2], 0.3, requires_grad=True)
+    val = loss_smoothness(points, occ, img_width=64)
+    assert val.item() == pytest.approx(0.0)
+
+
+def test_smoothness_finds_surface_and_is_finite():
+    points, occ = make_ray_samples()
+    occ = occ.clone().requires_grad_(True)
+    # Low θ so the finite-difference gradient of the synthetic surface
+    # comfortably clears the θ·w threshold
+    val = loss_smoothness(points, occ, img_width=64, theta=0.05)
     assert val.item() >= 0.0
-    assert not torch.isnan(val)
+    assert torch.isfinite(val)
+    # Must be differentiable w.r.t. occupancy values
+    val.backward()
+    assert occ.grad is not None
+    assert torch.isfinite(occ.grad).all()
+
+
+def test_smoothness_flat_surface_smoother_than_bumpy():
+    # A flat plane should incur less normal-variation penalty than an
+    # undulating surface with the same sharpness.
+    g = torch.Generator().manual_seed(1)
+    n_rays, k = 128, 64
+    xy = torch.rand(n_rays, 1, 2, generator=g) - 0.5
+    z = torch.linspace(-0.5, 0.5, k).reshape(1, k, 1).expand(n_rays, k, 1)
+    points = torch.cat([xy.expand(n_rays, k, 2), z], dim=-1)
+
+    flat_occ = torch.sigmoid(400.0 * z.squeeze(-1))
+    bump = 0.15 * torch.sin(20.0 * points[..., 0]) * torch.cos(20.0 * points[..., 1])
+    bumpy_occ = torch.sigmoid(400.0 * (z.squeeze(-1) - bump))
+
+    val_flat = loss_smoothness(points, flat_occ, img_width=64, theta=0.05)
+    val_bumpy = loss_smoothness(points, bumpy_occ, img_width=64, theta=0.05)
+    assert val_bumpy.item() > val_flat.item()

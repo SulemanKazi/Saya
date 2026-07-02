@@ -36,7 +36,8 @@ def parse_args() -> argparse.Namespace:
                    help="Target shadow images (same order as during training)")
     p.add_argument("--output-dir", default="./output/viz", metavar="DIR")
     p.add_argument("--img-size", type=int, default=256)
-    p.add_argument("--rays-per-pixel", type=int, default=None)
+    p.add_argument("--samples-per-ray", type=int, default=None,
+                   help="Samples along each ray (default: image width, n = w)")
     p.add_argument("--device", choices=["auto", "cuda", "mps", "cpu"], default=None)
     p.add_argument("--iou-report", action="store_true",
                    help="Print IoU and Dice score for each view")
@@ -105,7 +106,7 @@ def main() -> None:
         cfg.device = args.device
     device = resolve_device(cfg)
 
-    n_samples = args.rays_per_pixel or cfg.render.rays_per_pixel
+    n_samples = args.samples_per_ray or cfg.render.n_samples_per_ray or args.img_size
 
     model, epoch, _ = Trainer.load_checkpoint(args.checkpoint, cfg)
     model.to(device)

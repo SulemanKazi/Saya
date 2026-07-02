@@ -7,7 +7,7 @@ model:
   pos_enc_levels: 4
 
 render:
-  rays_per_pixel: 16      # more samples per ray for better gradient signal
+  n_samples_per_ray: 32   # fewer than n = w for speed
   frustum_truncation: true
   bbox_min: [-0.5, -0.5, -0.5]
   bbox_max: [0.5, 0.5, 0.5]
@@ -15,13 +15,14 @@ render:
 loss:
   beta_ren: 1.0
   beta_coh: 0.001
-  beta_smo: 0.0           # disabled — second-order gradients are unstable on small CPU models
+  beta_smo: 0.0001        # finite-difference gradients are stable on CPU too
   beta_vol: 0.0001
   beta_bin: 0.05
-  grad_threshold: 0.01    # kept low — small CPU model has weaker gradients than paper's GPU model
+  grad_threshold: 0.4     # θ in Eq. 11 (threshold is θ·w with w = img_size)
   vol_sigmoid_beta: 100.0
-  n_vol_samples: 128
-  n_smo_samples: 32
+  smo_k1: 26
+  smo_k2: 6
+  n_smo_samples: 256
 
 train:
   epochs: 20
@@ -33,6 +34,7 @@ train:
   checkpoint_every: 10
   log_every: 5
   use_registration: false
+  registration_every: 5
 
 mesh:
   grid_resolution: 50

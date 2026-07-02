@@ -7,12 +7,15 @@ import torch
 from torch import Tensor
 
 from .config import Config
+from .renderer import RayGenerator
 
 
 class MarchingCubesMeshExporter:
     """Extracts a watertight mesh from the neural occupancy field.
 
-    Evaluates the MLP on a 3D grid, applies Marching Cubes at the iso-threshold,
+    Evaluates the MLP on a 3D grid, truncates it to the intersection of all
+    viewing frustums (paper Sec. 3.2/3.4 — so the mesh cannot cast shadows
+    outside the target images), applies Marching Cubes at the iso-threshold,
     and exports the mesh for 3D printing.
     """
 
@@ -24,7 +27,7 @@ class MarchingCubesMeshExporter:
         model: "ShadowArtModel",  # noqa: F821
         device: torch.device,
     ) -> np.ndarray:
-        """Evaluate occupancy on a regular 3D grid.
+        """Evaluate occupancy on a regular 3D grid, frustum-truncated.
 
         Returns:
             (R, R, R) float32 numpy array of occupancy values.
@@ -43,12 +46,23 @@ class MarchingCubesMeshExporter:
 
         occ_vals = np.zeros(len(coords), dtype=np.float32)
 
+        truncate = self.cfg.render.frustum_truncation
+        if truncate:
+            ray_gen = RayGenerator(self.cfg)
+            light_dirs = model.get_light_dirs().detach()
+            screen_normals = model.get_screen_normals().detach()
+
         model.eval()
         with torch.no_grad():
             for start in range(0, len(coords), batch):
                 chunk = torch.from_numpy(coords[start : start + batch]).to(device)
-                out = model.occupancy(chunk).squeeze(-1).cpu().numpy()
-                occ_vals[start : start + batch] = out
+                out = model.occupancy(chunk).squeeze(-1)
+                if truncate:
+                    inside = ray_gen.points_in_frustums(
+                        chunk, light_dirs, screen_normals
+                    )
+                    out = out * inside.float()
+                occ_vals[start : start + batch] = out.cpu().numpy()
 
         model.train()
         return occ_vals.reshape(R, R, R)

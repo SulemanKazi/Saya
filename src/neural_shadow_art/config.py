@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import copy
 from dataclasses import dataclass, field
-from typing import Tuple
+from typing import Optional, Tuple
 
 import torch
 import yaml
@@ -13,11 +13,16 @@ class ModelConfig:
     n_layers: int = 8
     hidden_dim: int = 256
     pos_enc_levels: int = 6
+    # Initial logit of the occupancy field. Must start near-empty: with n
+    # samples per ray, the rendering gradient scales as (1−f)^(n−1), which
+    # vanishes (underflows for n = 256) if the field initializes at f ≈ 0.5.
+    init_bias: float = -6.0
 
 
 @dataclass
 class RenderConfig:
-    rays_per_pixel: int = 256  # paper: n = w (image width)
+    # Samples per ray. None → use the image width (paper: n = w).
+    n_samples_per_ray: Optional[int] = None
     frustum_truncation: bool = True
     bbox_min: Tuple[float, float, float] = (-0.5, -0.5, -0.5)
     bbox_max: Tuple[float, float, float] = (0.5, 0.5, 0.5)
@@ -30,10 +35,11 @@ class LossConfig:
     beta_smo: float = 0.0001   # paper: 10^-4
     beta_vol: float = 0.0001   # paper: 10^-4
     beta_bin: float = 0.05     # paper: 5×10^-2 (base, scaled by 2^min(epoch,3))
-    grad_threshold: float = 0.4  # paper: θ = 0.4 (Eq. 11)
-    vol_sigmoid_beta: float = 100.0
-    n_vol_samples: int = 512
-    n_smo_samples: int = 256
+    grad_threshold: float = 0.4  # paper: θ in Eq. 11 (threshold applied as θ·w)
+    vol_sigmoid_beta: float = 100.0  # 1/T in Eq. 15 (temperature of the soft switch)
+    smo_k1: int = 26           # paper: k₁ neighbors for finite-difference gradients (Eq. 13)
+    smo_k2: int = 6            # paper: k₂ nearest surface neighbors (Eq. 14)
+    n_smo_samples: int = 1024  # max surface candidates per step (cost cap for L_smo)
 
 
 @dataclass
@@ -47,6 +53,7 @@ class TrainConfig:
     checkpoint_every: int = 5
     log_every: int = 10
     use_registration: bool = False
+    registration_every: int = 5  # paper Sec. 3.3: ICP registration every 5 epochs
 
 
 @dataclass

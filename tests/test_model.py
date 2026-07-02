@@ -62,6 +62,40 @@ def test_shadow_art_model_normalized_dirs():
     assert torch.allclose(norms_s, torch.ones(2), atol=1e-5), "Screen normals must be unit vectors"
 
 
+def test_mlp_layer_count_matches_paper():
+    """Paper: n_layers counts all FC layers including the sigmoid output layer."""
+    cfg = ModelConfig(n_layers=8, hidden_dim=32, pos_enc_levels=4)
+    mlp = OccupancyMLP(cfg)
+    n_linear = sum(1 for m in mlp.net if isinstance(m, torch.nn.Linear))
+    assert n_linear == 8
+
+
+def test_light_screen_convention():
+    """Paper: screen normals point toward the object, ⟨l_i, s_i⟩ < 0."""
+    cfg = Config()
+    cfg.model.n_layers = 2
+    cfg.model.hidden_dim = 16
+    model = ShadowArtModel(cfg, n_views=3)
+    ld = model.get_light_dirs()
+    sn = model.get_screen_normals()
+    dots = (ld * sn).sum(dim=-1)
+    assert (dots < 0).all(), "Initial ⟨l, s⟩ must be negative (paper convention)"
+
+
+def test_custom_light_dirs():
+    cfg = Config()
+    cfg.model.n_layers = 2
+    cfg.model.hidden_dim = 16
+    init = torch.tensor([[0.0, 0.0, -2.0], [3.0, 0.0, 0.0]])
+    model = ShadowArtModel(cfg, n_views=2, init_light_dirs=init)
+    ld = model.get_light_dirs()
+    expected = torch.tensor([[0.0, 0.0, -1.0], [1.0, 0.0, 0.0]])
+    assert torch.allclose(ld, expected, atol=1e-6)
+
+    with pytest.raises(ValueError):
+        ShadowArtModel(cfg, n_views=2, init_light_dirs=torch.zeros(3, 3))
+
+
 def test_shadow_art_model_checkpoint():
     cfg = Config()
     cfg.model.n_layers = 2

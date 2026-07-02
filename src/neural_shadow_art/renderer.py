@@ -20,6 +20,17 @@ class RayBundle:
     valid: Tensor       # (N,) bool — False for rays that miss the scene bbox
 
 
+@dataclass
+class RenderResult:
+    """Per-ray render outputs; invalid rays have zeroed sample rows."""
+
+    pred_occ: Tensor        # (N,) aggregated ray occupancy in [0, 1]
+    sample_occ: Tensor      # (N, K) occupancy at each sample
+    sample_points: Tensor   # (N, K, 3) world-space sample positions (detached)
+    sample_weights: Tensor  # (N, K) trapezoid segment lengths ω (paper Eq. 16, detached)
+    valid: Tensor           # (N,) bool
+
+
 def _orthonormal_basis(n: Tensor) -> tuple[Tensor, Tensor]:
     """Given a unit vector n, return (e1, e2) orthonormal and perpendicular to n."""
     device, dtype = n.device, n.dtype
@@ -43,10 +54,15 @@ class RayGenerator:
         self.bbox_max = bbox_max
         self.scene_center = (bbox_min + bbox_max) * 0.5
         self.scene_radius = (bbox_max - bbox_min).norm() * 0.5
-        # Screen placed just beyond bbox in the light direction
+        # Screen placed just beyond bbox in the light direction. For parallel
+        # projection the distance only positions the ray origins, never the
+        # pixel→ray mapping, so any value beyond the bbox works.
         self.screen_dist = float(self.scene_radius) + 0.1
-        # Conservative screen half-size: covers the full scene from any angle
-        self.screen_half_size = float(self.scene_radius) * 1.2
+        # Paper Eq. 4: the image spans the normalized space, i.e. the image
+        # half-extent equals half the bbox extent (0.5 for the unit cube).
+        # A larger screen would leave border pixels that no geometry inside
+        # the bbox can ever shadow.
+        self.screen_half_size = float((bbox_max - bbox_min).max()) * 0.5
         self.frustum_truncation = cfg.render.frustum_truncation
 
     def _ray_bbox_intersection(
@@ -58,13 +74,14 @@ class RayGenerator:
         """
         bbox_min = self.bbox_min.to(origins.device)
         bbox_max = self.bbox_max.to(origins.device)
-        inv_dir = 1.0 / directions.clamp(min=1e-7).abs() * directions.sign()
-        # Handle zero directions
-        safe_inv = torch.where(
-            directions.abs() > 1e-7,
-            1.0 / directions,
-            torch.full_like(directions, 1e7),
+        # Clamp near-zero components BEFORE dividing: a `where(cond, 1/d, big)`
+        # would still compute 1/0 = inf in the forward pass, whose backward
+        # yields 0·inf = NaN gradients for the light directions.
+        sign = torch.where(directions >= 0, 1.0, -1.0)
+        safe_dir = torch.where(
+            directions.abs() > 1e-7, directions, sign * 1e-7
         )
+        safe_inv = 1.0 / safe_dir
         t1 = (bbox_min - origins) * safe_inv  # (N, 3)
         t2 = (bbox_max - origins) * safe_inv  # (N, 3)
         t_min = torch.minimum(t1, t2).amax(dim=-1)  # (N,) - max of per-axis mins
@@ -165,16 +182,16 @@ class RayGenerator:
             for e_j in (e1_j, e2_j):
                 D_j = torch.dot(l_j, e_j)
 
-                # Offset from screen center along this axis as a function of t:
-                #   u(t) = U0 + t * U1
-                # where U0 and U1 are derived from ray origin and direction.
+                # Screen coordinate of a ray point x(t) projected along l_j
+                # onto screen j:  u = (x−c)·e − ((x−c)·s)·(l·e)/⟨l,s⟩,
+                # linear in t:  u(t) = U0 + t · U1.
                 oc = bundle.origins - c_j  # (N, 3)
                 A_j = (oc * s_j).sum(dim=-1)          # (N,)
                 B_j = (bundle.directions[0] * s_j).sum()  # scalar
                 E_j = (oc * e_j).sum(dim=-1)           # (N,)
                 F_j = (bundle.directions[0] * e_j).sum()  # scalar
 
-                U0 = E_j + A_j * (D_j / C_j)                        # (N,)
+                U0 = E_j - A_j * (D_j / C_j)                        # (N,)
                 U1 = (F_j - B_j * (D_j / C_j)).detach().item()  # scalar
 
                 if abs(U1) > eps:
@@ -197,6 +214,47 @@ class RayGenerator:
             t_far=t_far,
             valid=valid,
         )
+
+    def points_in_frustums(
+        self,
+        points: Tensor,
+        all_light_dirs: Tensor,
+        all_screen_normals: Tensor,
+    ) -> Tensor:
+        """Boolean mask of points inside the intersection of all view frustums.
+
+        Each frustum is the prism obtained by translating the image rectangle
+        along its light direction (paper Sec. 3.2). Used at reconstruction time
+        so the exported mesh casts no shadows outside the target images.
+
+        Args:
+            points: (P, 3) world-space points.
+            all_light_dirs / all_screen_normals: (n_views, 3).
+        Returns:
+            (P,) bool mask.
+        """
+        device = points.device
+        h = self.screen_half_size
+        scene_center = self.scene_center.to(device)
+        inside = torch.ones(points.shape[0], dtype=torch.bool, device=device)
+        eps = 1e-6
+
+        for j in range(all_light_dirs.shape[0]):
+            l_j = F.normalize(all_light_dirs[j].to(device), dim=0)
+            s_j = F.normalize(all_screen_normals[j].to(device), dim=0)
+            C_j = torch.dot(l_j, s_j)
+            if abs(C_j.item()) < eps:
+                continue
+            c_j = scene_center + l_j * self.screen_dist
+            e1_j, e2_j = _orthonormal_basis(s_j)
+
+            pc = points - c_j  # (P, 3)
+            a = (pc * s_j).sum(dim=-1)  # (P,)
+            for e_j in (e1_j, e2_j):
+                u = (pc * e_j).sum(dim=-1) - a * (torch.dot(l_j, e_j) / C_j)
+                inside &= u.abs() <= h
+
+        return inside
 
 
 class DifferentiableRenderer:
@@ -245,13 +303,12 @@ class DifferentiableRenderer:
         model: "ShadowArtModel",  # noqa: F821
         bundle: RayBundle,
         n_samples: int,
-    ) -> tuple[Tensor, Tensor]:
+    ) -> RenderResult:
         """Render predicted occupancy for a batch of rays.
 
-        Returns:
-            pred_occ: (N,) aggregated occupancy per ray in [0, 1].
-                      Invalid rays (outside bbox) contribute 0.
-            per_sample_occ: (N, K) per-sample occupancy (needed for L_coh).
+        Invalid rays (outside bbox / fully truncated) get pred_occ 0 and
+        zeroed sample rows (their sample_weights are 0 so they drop out of
+        the sample-based losses).
         """
         device = bundle.origins.device
         N = bundle.origins.shape[0]
@@ -259,19 +316,23 @@ class DifferentiableRenderer:
 
         pred_occ = torch.zeros(N, device=device)
         per_sample_occ = torch.zeros(N, K, device=device)
+        sample_points = torch.zeros(N, K, 3, device=device)
+        sample_weights = torch.zeros(N, K, device=device)
 
         valid = bundle.valid & (bundle.t_near < bundle.t_far)
         if valid.sum() == 0:
-            return pred_occ, per_sample_occ
+            return RenderResult(
+                pred_occ, per_sample_occ, sample_points, sample_weights, valid
+            )
 
         v_origins = bundle.origins[valid]
         v_directions = bundle.directions[valid]
         v_t_near = bundle.t_near[valid]
         v_t_far = bundle.t_far[valid]
 
-        points, _ = self.sample_points_along_rays(
+        points, t_vals = self.sample_points_along_rays(
             v_origins, v_directions, v_t_near, v_t_far, K
-        )  # (N_v, K, 3)
+        )  # (N_v, K, 3), (N_v, K)
 
         N_v = v_origins.shape[0]
         points_flat = points.reshape(N_v * K, 3)
@@ -282,10 +343,26 @@ class DifferentiableRenderer:
         log_trans = torch.log(1.0 - occ.clamp(0.0, 1.0 - 1e-7) + 1e-7).sum(dim=-1)
         occ_agg = 1.0 - torch.exp(log_trans)  # (N_v,)
 
+        # Trapezoid segment lengths ω (paper Eq. 16). Directions are unit
+        # vectors, so |t_{k+1} − t_k| equals the world-space spacing.
+        weights = torch.zeros(N_v, K, device=device)
+        if K >= 2:
+            dt = (t_vals[:, 1:] - t_vals[:, :-1]).abs()  # (N_v, K-1)
+            weights[:, 0] = dt[:, 0]
+            weights[:, -1] = dt[:, -1]
+            if K > 2:
+                weights[:, 1:-1] = 0.5 * (dt[:, :-1] + dt[:, 1:])
+        else:
+            weights[:, 0] = v_t_far - v_t_near
+
         pred_occ[valid] = occ_agg
         per_sample_occ[valid] = occ
+        sample_points[valid] = points.detach()
+        sample_weights[valid] = weights.detach()
 
-        return pred_occ, per_sample_occ
+        return RenderResult(
+            pred_occ, per_sample_occ, sample_points, sample_weights, valid
+        )
 
     def render_all_views(
         self,
@@ -300,7 +377,8 @@ class DifferentiableRenderer:
         Returns a list of (H, W) tensors, one per view.
         """
         if n_samples is None:
-            n_samples = self.cfg.render.rays_per_pixel
+            # Paper: n = w samples per ray (image width)
+            n_samples = self.cfg.render.n_samples_per_ray or img_size
 
         device = next(model.parameters()).device
         H = W = img_size
@@ -324,8 +402,8 @@ class DifferentiableRenderer:
                     bundle = ray_gen.apply_frustum_truncation(
                         bundle, light_dirs, screen_normals, i
                     )
-                pred_occ, _ = self.render_view(model, bundle, n_samples)
-                results.append(pred_occ.reshape(H, W))
+                result = self.render_view(model, bundle, n_samples)
+                results.append(result.pred_occ.reshape(H, W))
 
         model.train()
         return results

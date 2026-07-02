@@ -23,3 +23,6 @@ packages = ["src/neural_shadow_art"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "slow: long-running end-to-end tests (deselect with '-m \"not slow\"')",
+]

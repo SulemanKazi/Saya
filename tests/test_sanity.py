@@ -41,7 +41,7 @@ def tiny_config() -> Config:
     cfg.model.n_layers = 2
     cfg.model.hidden_dim = 32
     cfg.model.pos_enc_levels = 4
-    cfg.render.rays_per_pixel = 4
+    cfg.render.n_samples_per_ray = 8
     cfg.render.frustum_truncation = True
     cfg.train.epochs = 3
     cfg.train.lr = 1e-3
@@ -50,7 +50,6 @@ def tiny_config() -> Config:
     cfg.train.seed = 0
     cfg.train.log_every = 9999  # suppress per-step logging
     cfg.train.checkpoint_every = 3
-    cfg.loss.n_vol_samples = 32
     cfg.loss.n_smo_samples = 16
     cfg.device = "cpu"
     cfg.mesh.grid_resolution = 20
