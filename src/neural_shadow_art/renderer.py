@@ -371,14 +371,26 @@ class DifferentiableRenderer:
         n_views: int,
         img_size: int,
         n_samples: int | None = None,
+        chunk_size: int | None = None,
     ) -> list[Tensor]:
         """Render full shadow maps for all views.
+
+        Rays are rendered in blocks of ``chunk_size`` pixels so peak memory
+        stays bounded regardless of ``img_size``. A full view is H*W rays ×
+        n_samples points fed through the MLP at once — at the defaults that is
+        ~16.8M points and tens of GB of activations, which OOMs on CPU. The
+        training loop avoids this by sampling ``batch_size_rays`` per step;
+        this path did not, so it chunks explicitly. Rays are independent, so
+        chunking is statistically equivalent to a single-pass render (not
+        bit-identical only because stratified sampling draws fresh per chunk).
 
         Returns a list of (H, W) tensors, one per view.
         """
         if n_samples is None:
             # Paper: n = w samples per ray (image width)
             n_samples = self.cfg.render.n_samples_per_ray or img_size
+        if chunk_size is None:
+            chunk_size = self.cfg.train.batch_size_rays
 
         device = next(model.parameters()).device
         H = W = img_size
@@ -395,15 +407,19 @@ class DifferentiableRenderer:
         model.eval()
         with torch.no_grad():
             for i in range(n_views):
-                bundle = ray_gen.generate_rays_for_view(
-                    light_dirs[i], screen_normals[i], pixel_coords
-                )
-                if ray_gen.frustum_truncation and n_views > 1:
-                    bundle = ray_gen.apply_frustum_truncation(
-                        bundle, light_dirs, screen_normals, i
+                pred_chunks = []
+                for start in range(0, pixel_coords.shape[0], chunk_size):
+                    coords = pixel_coords[start:start + chunk_size]
+                    bundle = ray_gen.generate_rays_for_view(
+                        light_dirs[i], screen_normals[i], coords
                     )
-                result = self.render_view(model, bundle, n_samples)
-                results.append(result.pred_occ.reshape(H, W))
+                    if ray_gen.frustum_truncation and n_views > 1:
+                        bundle = ray_gen.apply_frustum_truncation(
+                            bundle, light_dirs, screen_normals, i
+                        )
+                    result = self.render_view(model, bundle, n_samples)
+                    pred_chunks.append(result.pred_occ)
+                results.append(torch.cat(pred_chunks).reshape(H, W))
 
         model.train()
         return results
