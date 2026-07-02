@@ -1,0 +1,552 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Binary Shadow Caster Input Generator</title>
+    <style>
+        :root {
+            --bg-color: #121212;
+            --panel-bg: #1e1e1e;
+            --text-color: #e0e0e0;
+            --accent: #4caf50;
+            --accent-hover: #45a049;
+            --border: #333;
+        }
+
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            font-family: system-ui, -apple-system, sans-serif;
+            display: flex;
+            height: 100vh;
+            overflow: hidden;
+        }
+
+        #sidebar {
+            width: 320px;
+            background-color: var(--panel-bg);
+            border-right: 1px solid var(--border);
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+            overflow-y: auto;
+            z-index: 10;
+        }
+
+        #workspace {
+            flex: 1;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            background-color: #000;
+            overflow: auto; 
+            position: relative;
+        }
+
+        #canvasWrapper {
+            position: relative;
+            box-shadow: 0 0 20px rgba(0,0,0,0.8);
+            margin: 50px auto; 
+        }
+
+        canvas {
+            image-rendering: pixelated;
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+        }
+
+        #gridOverlay {
+            pointer-events: none; 
+            z-index: 2;
+        }
+
+        #canvas {
+            z-index: 1;
+            cursor: crosshair;
+            background-color: white;
+        }
+
+        h2 {
+            margin: 0 0 10px 0;
+            font-size: 1.2rem;
+            border-bottom: 1px solid var(--border);
+            padding-bottom: 5px;
+        }
+
+        .control-group {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .row {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        label {
+            font-size: 0.9rem;
+            color: #aaa;
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+
+        input[type="number"], input[type="range"], select {
+            background: #2a2a2a;
+            border: 1px solid var(--border);
+            color: white;
+            padding: 5px;
+            border-radius: 4px;
+            width: 100%;
+        }
+        
+        select {
+            width: 100px;
+            cursor: pointer;
+        }
+
+        input[type="checkbox"] {
+            width: auto;
+            cursor: pointer;
+        }
+
+        button {
+            background-color: #333;
+            color: white;
+            border: 1px solid #555;
+            padding: 8px 12px;
+            cursor: pointer;
+            border-radius: 4px;
+            transition: background 0.2s;
+            flex: 1;
+        }
+
+        button:hover { background-color: #444; }
+        button:active { background-color: #222; }
+        
+        button.primary {
+            background-color: var(--accent);
+            border-color: var(--accent-hover);
+        }
+        button.primary:hover { background-color: var(--accent-hover); }
+
+        .instructions {
+            background: #2a2a2a;
+            padding: 10px;
+            border-radius: 4px;
+            font-size: 0.85rem;
+            color: #ccc;
+            line-height: 1.4;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="sidebar">
+        <h2>Grid Settings</h2>
+        <div class="control-group">
+            <div class="row">
+                <label for="gridSize">Resolution (N):</label>
+                <input type="number" id="gridSize" value="32" min="4" max="256" style="width: 80px;">
+            </div>
+            <label>
+                <input type="checkbox" id="showGrid" checked> Show Gridlines
+            </label>
+            <div class="row">
+                <label>Zoom:</label>
+                <span id="zoomVal">100%</span>
+            </div>
+            <button id="btnReset">Resize / Clear Grid</button>
+        </div>
+
+        <h2>Tools</h2>
+        <div class="control-group">
+            <div class="row">
+                <label>Left Click:</label>
+                <select id="primaryColor">
+                    <option value="#000000">Black</option>
+                    <option value="#ffffff">White</option>
+                </select>
+            </div>
+            <div class="row">
+                <label>Right Click:</label>
+                <select id="secondaryColor">
+                    <option value="#ffffff">White</option>
+                    <option value="#000000">Black</option>
+                </select>
+            </div>
+
+            <label for="brushSize" style="margin-top:10px;">Brush Size: <span id="brushSizeVal">1</span></label>
+            <input type="range" id="brushSize" value="1" min="1" max="10">
+            
+            <div class="row" style="margin-top: 10px;">
+                <button id="btnUndo">Undo (Ctrl+Z)</button>
+                <button id="btnRedo">Redo (Ctrl+Y)</button>
+            </div>
+            <div class="row">
+                <button id="btnClear">Fill Right C.</button>
+                <button id="btnFill">Fill Left C.</button>
+            </div>
+        </div>
+
+        <h2>Export</h2>
+        <div class="control-group">
+            <div class="row">
+                <label for="exportRes">Export Size (px):</label>
+                <input type="number" id="exportRes" value="512" step="128" style="width: 80px;">
+            </div>
+            <label style="margin-top: 5px;">
+                <input type="checkbox" id="invertExport"> Invert Output Colors
+            </label>
+            <button id="btnExport" class="primary" style="margin-top: 5px;">Export PNG</button>
+        </div>
+
+        <div class="instructions">
+            <strong>Controls:</strong><br>
+            • Left / Right Click: Draw<br>
+            • Hold Shift + Drag: Straight Line<br>
+            • Mouse Wheel: Zoom In/Out<br>
+            • Alt + Click: Fill Row<br>
+            • Shift + Alt + Click: Fill Column
+        </div>
+    </div>
+
+    <div id="workspace">
+        <div id="canvasWrapper">
+            <canvas id="canvas"></canvas>
+            <canvas id="gridOverlay"></canvas>
+        </div>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        const overlay = document.getElementById('gridOverlay');
+        const overlayCtx = overlay.getContext('2d');
+        const wrapper = document.getElementById('canvasWrapper');
+        
+        // State
+        let gridSize = 32;
+        let grid = [];
+        let backupGrid = []; 
+        let history = [];
+        let historyIndex = -1;
+        
+        // Drawing State
+        let isDrawing = false;
+        let drawColor = "#000000"; 
+        let startPos = null;      
+        let lastPos = null;       
+
+        // View State
+        const baseDisplaySize = 600; 
+        let zoomLevel = 1.0;
+
+        // Color Cache for fast rendering
+        const hexCache = {
+            "#000000": [0, 0, 0],
+            "#ffffff": [255, 255, 255]
+        };
+        function hexToRgb(hex) {
+            return hexCache[hex];
+        }
+
+        // Initialize
+        function initGrid(size) {
+            gridSize = size;
+            const defaultColor = document.getElementById('secondaryColor').value;
+            grid = Array(gridSize).fill().map(() => Array(gridSize).fill(defaultColor));
+            
+            canvas.width = gridSize;
+            canvas.height = gridSize;
+            
+            saveState();
+            updateZoom();
+            render();
+        }
+
+        // --- View & Rendering ---
+
+        function render() {
+            const imageData = ctx.createImageData(gridSize, gridSize);
+            for (let y = 0; y < gridSize; y++) {
+                for (let x = 0; x < gridSize; x++) {
+                    const idx = (y * gridSize + x) * 4;
+                    const [r, g, b] = hexToRgb(grid[y][x]);
+                    imageData.data[idx] = r;
+                    imageData.data[idx+1] = g;
+                    imageData.data[idx+2] = b;
+                    imageData.data[idx+3] = 255;
+                }
+            }
+            ctx.putImageData(imageData, 0, 0);
+        }
+
+        function drawGridlines() {
+            const size = baseDisplaySize * zoomLevel;
+            overlay.width = size;
+            overlay.height = size;
+            
+            overlayCtx.clearRect(0, 0, size, size);
+            
+            if (!document.getElementById('showGrid').checked || zoomLevel < 0.5) return;
+
+            const cellSize = size / gridSize;
+            overlayCtx.strokeStyle = 'rgba(128, 128, 128, 0.4)';
+            overlayCtx.lineWidth = 1;
+            
+            overlayCtx.beginPath();
+            for (let i = 0; i <= gridSize; i++) {
+                const pos = Math.floor(i * cellSize) + 0.5;
+                overlayCtx.moveTo(pos, 0);
+                overlayCtx.lineTo(pos, size);
+                overlayCtx.moveTo(0, pos);
+                overlayCtx.lineTo(size, pos);
+            }
+            overlayCtx.stroke();
+        }
+
+        function updateZoom() {
+            const newSize = Math.floor(baseDisplaySize * zoomLevel);
+            wrapper.style.width = newSize + 'px';
+            wrapper.style.height = newSize + 'px';
+            document.getElementById('zoomVal').textContent = Math.round(zoomLevel * 100) + '%';
+            drawGridlines();
+        }
+
+        // --- History Management ---
+
+        function saveState() {
+            if (historyIndex < history.length - 1) {
+                history = history.slice(0, historyIndex + 1);
+            }
+            const gridCopy = grid.map(row => [...row]);
+            history.push(gridCopy);
+            
+            if (history.length > 50) history.shift();
+            else historyIndex++;
+        }
+
+        function undo() {
+            if (historyIndex > 0) {
+                historyIndex--;
+                grid = history[historyIndex].map(row => [...row]);
+                render();
+            }
+        }
+
+        function redo() {
+            if (historyIndex < history.length - 1) {
+                historyIndex++;
+                grid = history[historyIndex].map(row => [...row]);
+                render();
+            }
+        }
+
+        // --- Drawing Logic ---
+
+        function getMousePos(e) {
+            const rect = canvas.getBoundingClientRect();
+            const scaleX = canvas.width / rect.width;
+            const scaleY = canvas.height / rect.height;
+            return {
+                x: Math.floor((e.clientX - rect.left) * scaleX),
+                y: Math.floor((e.clientY - rect.top) * scaleY)
+            };
+        }
+
+        function paintCell(x, y, color, brushSize) {
+            let changed = false;
+            const offset = Math.floor(brushSize / 2);
+            
+            for (let dy = 0; dy < brushSize; dy++) {
+                for (let dx = 0; dx < brushSize; dx++) {
+                    const cy = y - offset + dy;
+                    const cx = x - offset + dx;
+                    if (cx >= 0 && cx < gridSize && cy >= 0 && cy < gridSize) {
+                        if (grid[cy][cx] !== color) {
+                            grid[cy][cx] = color;
+                            changed = true;
+                        }
+                    }
+                }
+            }
+            return changed;
+        }
+
+        function paintLine(x0, y0, x1, y1, color, brushSize) {
+            let changed = false;
+            let dx = Math.abs(x1 - x0);
+            let dy = Math.abs(y1 - y0);
+            let sx = (x0 < x1) ? 1 : -1;
+            let sy = (y0 < y1) ? 1 : -1;
+            let err = dx - dy;
+
+            while (true) {
+                if (paintCell(x0, y0, color, brushSize)) changed = true;
+                if (x0 === x1 && y0 === y1) break;
+                let e2 = 2 * err;
+                if (e2 > -dy) { err -= dy; x0 += sx; }
+                if (e2 < dx) { err += dx; y0 += sy; }
+            }
+            return changed;
+        }
+
+        function fillRow(y, color) {
+            for(let x=0; x<gridSize; x++) grid[y][x] = color;
+        }
+
+        function fillCol(x, color) {
+            for(let y=0; y<gridSize; y++) grid[y][x] = color;
+        }
+
+        // --- Input Events ---
+
+        canvas.addEventListener('mousedown', (e) => {
+            isDrawing = true;
+            drawColor = e.button === 2 
+                ? document.getElementById('secondaryColor').value 
+                : document.getElementById('primaryColor').value;
+                
+            const pos = getMousePos(e);
+            const brushSize = parseInt(document.getElementById('brushSize').value);
+
+            backupGrid = grid.map(row => [...row]);
+            startPos = pos;
+            lastPos = pos;
+
+            if (e.altKey) {
+                if (e.shiftKey) fillCol(pos.x, drawColor); 
+                else fillRow(pos.y, drawColor);
+                render();
+                saveState();
+                isDrawing = false;
+                return;
+            }
+
+            paintCell(pos.x, pos.y, drawColor, brushSize);
+            render();
+        });
+
+        window.addEventListener('mousemove', (e) => {
+            if (!isDrawing) return;
+            const pos = getMousePos(e);
+            const brushSize = parseInt(document.getElementById('brushSize').value);
+            
+            if (e.shiftKey) {
+                grid = backupGrid.map(row => [...row]);
+                paintLine(startPos.x, startPos.y, pos.x, pos.y, drawColor, brushSize);
+                lastPos = pos; 
+            } else {
+                paintLine(lastPos.x, lastPos.y, pos.x, pos.y, drawColor, brushSize);
+                lastPos = pos;
+            }
+            
+            render();
+        });
+
+        window.addEventListener('mouseup', () => {
+            if (isDrawing) {
+                isDrawing = false;
+                saveState();
+            }
+        });
+        
+        window.addEventListener('mouseleave', () => {
+            if (isDrawing) {
+                isDrawing = false;
+                saveState();
+            }
+        });
+
+        canvas.addEventListener('contextmenu', e => e.preventDefault());
+
+        // Zoom via Mouse Wheel
+        document.getElementById('workspace').addEventListener('wheel', (e) => {
+            if (e.ctrlKey) {
+                e.preventDefault(); 
+            }
+            const zoomAmount = 0.1;
+            if (e.deltaY < 0) {
+                zoomLevel = Math.min(5.0, zoomLevel + zoomAmount);
+            } else {
+                zoomLevel = Math.max(0.5, zoomLevel - zoomAmount);
+            }
+            updateZoom();
+        }, { passive: false });
+
+        window.addEventListener('keydown', (e) => {
+            if (e.ctrlKey && (e.key === 'z' || e.key === 'Z')) undo();
+            if (e.ctrlKey && (e.key === 'y' || e.key === 'Y')) redo();
+        });
+
+        // --- UI Setup ---
+
+        document.getElementById('btnReset').addEventListener('click', () => {
+            const newSize = parseInt(document.getElementById('gridSize').value);
+            if(newSize >= 4 && newSize <= 256) initGrid(newSize);
+        });
+
+        document.getElementById('showGrid').addEventListener('change', drawGridlines);
+        
+        document.getElementById('brushSize').addEventListener('input', (e) => {
+            document.getElementById('brushSizeVal').textContent = e.target.value;
+        });
+
+        document.getElementById('btnUndo').addEventListener('click', undo);
+        document.getElementById('btnRedo').addEventListener('click', redo);
+
+        document.getElementById('btnClear').addEventListener('click', () => {
+            const color = document.getElementById('secondaryColor').value;
+            grid = Array(gridSize).fill().map(() => Array(gridSize).fill(color));
+            render();
+            saveState();
+        });
+
+        document.getElementById('btnFill').addEventListener('click', () => {
+            const color = document.getElementById('primaryColor').value;
+            grid = Array(gridSize).fill().map(() => Array(gridSize).fill(color));
+            render();
+            saveState();
+        });
+
+        document.getElementById('btnExport').addEventListener('click', () => {
+            const res = parseInt(document.getElementById('exportRes').value) || 512;
+            const invert = document.getElementById('invertExport').checked;
+            
+            const offscreen = document.createElement('canvas');
+            offscreen.width = res;
+            offscreen.height = res;
+            const octx = offscreen.getContext('2d');
+            
+            octx.imageSmoothingEnabled = false;
+            
+            // Native canvas filter for super clean color inversion
+            if (invert) {
+                octx.filter = 'invert(1)';
+            }
+            
+            octx.drawImage(canvas, 0, 0, res, res);
+
+            const link = document.createElement('a');
+            const invertedSuffix = invert ? '_inverted' : '';
+            link.download = `shadow_input_${gridSize}x${gridSize}${invertedSuffix}.png`;
+            link.href = offscreen.toDataURL('image/png');
+            link.click();
+        });
+
+        // Boot
+        initGrid(32);
+    </script>
+</body>
+</html>
