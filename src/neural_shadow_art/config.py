@@ -45,6 +45,12 @@ class LossConfig:
 @dataclass
 class TrainConfig:
     epochs: int = 30
+    # Multiplier on the per-epoch step count. Steps/epoch = this ×
+    # (img_size² · n_views / batch_size_rays), i.e. how many times each pixel
+    # is revisited per epoch (with fresh stratified samples). Raise it to add
+    # optimization iterations WITHOUT touching the epoch-indexed loss schedule
+    # (the 2^min(epoch,3) ramp and the smo/vol gate at epoch 3 stay proportional).
+    steps_per_epoch_mult: int = 1
     lr: float = 1e-4
     lr_light: float = 1e-3
     img_size: int = 256

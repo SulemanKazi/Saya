@@ -53,6 +53,9 @@ def parse_args() -> argparse.Namespace:
 
     # Training
     p.add_argument("--epochs", type=int, default=None)
+    p.add_argument("--steps-per-epoch-mult", type=int, default=None,
+                   help="Multiply the per-epoch step count to add iterations "
+                        "without changing the epoch-indexed loss schedule")
     p.add_argument("--lr", type=float, default=None, help="MLP learning rate")
     p.add_argument("--lr-light", type=float, default=None,
                    help="Learning rate for light/screen parameters")
@@ -103,6 +106,8 @@ def apply_cli_overrides(cfg: Config, args: argparse.Namespace) -> Config:
     """Overwrite config fields with any CLI flags the user explicitly set."""
     if args.epochs is not None:
         cfg.train.epochs = args.epochs
+    if args.steps_per_epoch_mult is not None:
+        cfg.train.steps_per_epoch_mult = args.steps_per_epoch_mult
     if args.lr is not None:
         cfg.train.lr = args.lr
     if args.lr_light is not None:

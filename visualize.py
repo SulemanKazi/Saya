@@ -21,6 +21,7 @@ import torch
 
 from src.neural_shadow_art.config import load_config, resolve_device
 from src.neural_shadow_art.dataset import ShadowDataset
+from src.neural_shadow_art.mesh_export import MarchingCubesMeshExporter
 from src.neural_shadow_art.renderer import DifferentiableRenderer, RayGenerator
 from src.neural_shadow_art.trainer import Trainer
 
@@ -43,6 +44,10 @@ def parse_args() -> argparse.Namespace:
                    help="Print IoU and Dice score for each view")
     p.add_argument("--save-comparison", action="store_true",
                    help="Save side-by-side [target | predicted | diff] images")
+    p.add_argument("--export-mesh", action="store_true",
+                   help="Run Marching Cubes on the checkpoint and export a mesh")
+    p.add_argument("--mesh-format", choices=["stl", "obj", "ply"], default=None,
+                   help="Output mesh format (default: from config)")
     p.add_argument("--invert", action="store_true")
     return p.parse_args()
 
@@ -104,6 +109,8 @@ def main() -> None:
 
     if args.device is not None:
         cfg.device = args.device
+    if args.mesh_format is not None:
+        cfg.mesh.output_format = args.mesh_format
     device = resolve_device(cfg)
 
     n_samples = args.samples_per_ray or cfg.render.n_samples_per_ray or args.img_size
@@ -139,6 +146,11 @@ def main() -> None:
 
     if args.iou_report:
         print()
+
+    if args.export_mesh:
+        exporter = MarchingCubesMeshExporter(cfg)
+        mesh_path = os.path.join(args.output_dir, "sculpture." + cfg.mesh.output_format)
+        exporter.export(model, device, mesh_path)
 
 
 if __name__ == "__main__":

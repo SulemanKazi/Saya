@@ -2,7 +2,7 @@
 
 **Authors:** Caoliwen Wang, Bailin Deng, Juyong Zhang  
 **Venue:** Pacific Graphics 2025 Conference Track  
-**Paper:** https://arxiv.org/abs/2411.19161
+**Paper:** https://arxiv.org/git/2411.19161
 
 ---
 

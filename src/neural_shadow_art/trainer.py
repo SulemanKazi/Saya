@@ -229,9 +229,12 @@ class Trainer:
             epoch_losses: list[dict[str, float]] = []
             t0 = time.time()
 
-            # Determine steps per epoch: enough to see all pixels ~once
+            # Determine steps per epoch: enough to see all pixels ~once,
+            # times steps_per_epoch_mult to add iterations without perturbing
+            # the epoch-indexed loss schedule.
             n_pixels_total = self.dataset.img_size ** 2 * self.dataset.n_views
             steps_per_epoch = max(1, n_pixels_total // cfg.batch_size_rays)
+            steps_per_epoch *= max(1, cfg.steps_per_epoch_mult)
 
             with tqdm(
                 total=steps_per_epoch,

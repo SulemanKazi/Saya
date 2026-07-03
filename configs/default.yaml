@@ -15,7 +15,7 @@ render:
 loss:
   beta_ren: 1.0           # rendering loss weight (β₀)
   beta_coh: 0.001         # cohesion base weight (β₁ = 10⁻³, scaled by 2^min(epoch,3))
-  beta_smo: 0.0001        # smoothness weight (β₂ = 10⁻⁴, activates after epoch 3)
+  beta_smo: 0       # smoothness weight (β₂ = 10⁻⁴, activates after epoch 3)
   beta_vol: 0.0001        # volume weight (β₃ = 10⁻⁴, activates after epoch 3)
   beta_bin: 0.05          # binarization base weight (β₄ = 5×10⁻², scaled by 2^min(epoch,3))
   grad_threshold: 0.4     # θ in Eq. 11; surface points satisfy ‖∇f‖ > θ·w
@@ -26,6 +26,7 @@ loss:
 
 train:
   epochs: 30
+  steps_per_epoch_mult: 12  # ×steps/epoch (revisit each pixel N× per epoch) to add iterations without changing the epoch-indexed loss schedule
   lr: 0.0001            # MLP learning rate
   lr_light: 0.001       # learning rate for light dirs and screen normals
   batch_size_rays: 1024 # total rays per gradient step (split evenly across views)
