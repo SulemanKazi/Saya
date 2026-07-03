@@ -256,6 +256,62 @@ class RayGenerator:
 
         return inside
 
+    def points_in_target_hull(
+        self,
+        points: Tensor,
+        all_light_dirs: Tensor,
+        all_screen_normals: Tensor,
+        target_masks: Tensor,
+    ) -> Tensor:
+        """Boolean mask of points inside the visual hull of the target shadows.
+
+        A point is in the hull iff its projection along every view's light
+        direction lands on a shadow pixel of that view's target mask. Since
+        the rendered shadow is a union (O = 1 − ∏(1 − f_k)), filling any hull
+        point with material only darkens pixels that are already dark in all
+        targets — i.e. it cannot change any shadow. Used at export time to
+        route connectivity struts (mesh_export.connect_grid_components).
+
+        Args:
+            points: (P, 3) world-space points.
+            all_light_dirs / all_screen_normals: (n_views, 3).
+            target_masks: (n_views, H, W) binary masks in the same pixel
+                convention as training targets (row ↔ v, col ↔ u in [-1, 1]).
+        Returns:
+            (P,) bool mask.
+        """
+        device = points.device
+        h = self.screen_half_size
+        scene_center = self.scene_center.to(device)
+        inside = torch.ones(points.shape[0], dtype=torch.bool, device=device)
+        eps = 1e-6
+
+        for j in range(all_light_dirs.shape[0]):
+            l_j = F.normalize(all_light_dirs[j].to(device), dim=0)
+            s_j = F.normalize(all_screen_normals[j].to(device), dim=0)
+            C_j = torch.dot(l_j, s_j)
+            if abs(C_j.item()) < eps:
+                continue
+            c_j = scene_center + l_j * self.screen_dist
+            e1_j, e2_j = _orthonormal_basis(s_j)
+
+            pc = points - c_j  # (P, 3)
+            a = (pc * s_j).sum(dim=-1)  # (P,)
+            u = (pc * e1_j).sum(dim=-1) - a * (torch.dot(l_j, e1_j) / C_j)
+            v = (pc * e2_j).sum(dim=-1) - a * (torch.dot(l_j, e2_j) / C_j)
+            un, vn = u / h, v / h  # normalized screen coords in [-1, 1]
+            inside &= (un.abs() <= 1.0) & (vn.abs() <= 1.0)
+
+            # Inverse of the trainer's pixel→coord mapping:
+            # u = col/(W−1)·2 − 1, v = row/(H−1)·2 − 1.
+            mask = target_masks[j].to(device)
+            H, W = mask.shape
+            col = ((un + 1.0) * 0.5 * (W - 1)).round().long().clamp(0, W - 1)
+            row = ((vn + 1.0) * 0.5 * (H - 1)).round().long().clamp(0, H - 1)
+            inside &= mask[row, col] > 0.5
+
+        return inside
+
 
 class DifferentiableRenderer:
     """Renders predicted shadow maps from a neural occupancy field.

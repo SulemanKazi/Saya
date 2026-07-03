@@ -232,7 +232,10 @@ def main() -> None:
         device = resolve_device(cfg)
         exporter = MarchingCubesMeshExporter(cfg)
         mesh_path = os.path.join(args.output_dir, "sculpture." + cfg.mesh.output_format)
-        exporter.export(model, device, mesh_path)
+        # Use the trainer's current targets (registered, if enabled) so the
+        # connectivity-repair hull matches what the model was trained against.
+        target_masks = torch.stack([t.detach().cpu() for t in trainer.targets])
+        exporter.export(model, device, mesh_path, target_masks=target_masks)
 
 
 if __name__ == "__main__":

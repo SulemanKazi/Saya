@@ -68,6 +68,18 @@ class MeshConfig:
     iso_threshold: float = 0.5
     output_format: str = "stl"
     eval_batch_size: int = 32768
+    # Connectivity repair: connect disconnected components with struts routed
+    # through the target visual hull (region projecting inside the shadow in
+    # every view). Adding material there provably cannot change any shadow —
+    # the render is a union, O = 1 − ∏(1 − f_k), so extra occupancy only
+    # darkens pixels that are already dark in all targets.
+    connect_components: bool = True
+    strut_radius_mm: float = 2.0   # physical strut radius on the printed model
+    model_size_mm: float = 100.0   # physical size the bbox maps to when printed
+    # Erode target masks by this many pixels before the hull test, so material
+    # is never added flush against a silhouette boundary (guards against
+    # off-by-half-a-pixel effects from nearest-pixel mask sampling).
+    hull_erosion_px: int = 1
 
 
 @dataclass

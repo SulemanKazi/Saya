@@ -41,5 +41,9 @@ mesh:
   iso_threshold: 0.5    # τ: occupancy threshold for surface extraction
   output_format: stl    # stl | obj | ply
   eval_batch_size: 32768  # MLP evaluation batch size for grid (tune for OOM)
+  connect_components: true  # join disconnected blobs with shadow-safe struts routed through the target visual hull
+  strut_radius_mm: 2.0      # physical strut radius on the printed model
+  model_size_mm: 100.0      # physical size the bbox maps to when printed (sets voxel→mm scale)
+  hull_erosion_px: 1        # erode targets before the hull test (safety margin at silhouette borders)
 
 device: auto  # auto | cuda | mps | cpu

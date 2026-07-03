@@ -22,6 +22,7 @@ import torch
 from src.neural_shadow_art.config import load_config, resolve_device
 from src.neural_shadow_art.dataset import ShadowDataset
 from src.neural_shadow_art.mesh_export import MarchingCubesMeshExporter
+from src.neural_shadow_art.registration import RigidRegistration
 from src.neural_shadow_art.renderer import DifferentiableRenderer, RayGenerator
 from src.neural_shadow_art.trainer import Trainer
 
@@ -150,7 +151,18 @@ def main() -> None:
     if args.export_mesh:
         exporter = MarchingCubesMeshExporter(cfg)
         mesh_path = os.path.join(args.output_dir, "sculpture." + cfg.mesh.output_format)
-        exporter.export(model, device, mesh_path)
+        # Connectivity repair needs the targets the model was trained against;
+        # re-apply any registration transforms saved in the checkpoint.
+        target_masks = dataset.get_all_masks()
+        if "registration_state" in payload:
+            registration = RigidRegistration(n_views=dataset.n_views)
+            registration.load_state_dict(payload["registration_state"])
+            if not registration.is_identity():
+                target_masks = torch.stack([
+                    registration.warp_mask(target_masks[i], i)
+                    for i in range(dataset.n_views)
+                ])
+        exporter.export(model, device, mesh_path, target_masks=target_masks)
 
 
 if __name__ == "__main__":
