@@ -14,15 +14,19 @@ render:
 
 loss:
   beta_ren: 1.0           # rendering loss weight (β₀)
-  beta_coh: 0.001         # cohesion base weight (β₁ = 10⁻³, scaled by 2^min(epoch,3))
+  beta_coh: 0.005         # cohesion base weight (β₁ = 10⁻³, scaled by 2^min(epoch,3))
   beta_smo: 0       # smoothness weight (β₂ = 10⁻⁴, activates after epoch 3)
-  beta_vol: 0.0001        # volume weight (β₃ = 10⁻⁴, activates after epoch 3)
-  beta_bin: 0.05          # binarization base weight (β₄ = 5×10⁻², scaled by 2^min(epoch,3))
+  beta_vol: 0.0        # volume weight (β₃ = 10⁻⁴, activates after epoch 3)
+  beta_bin: 0.02          # binarization base weight (β₄ = 5×10⁻², scaled by 2^min(epoch,3))
   grad_threshold: 0.4     # θ in Eq. 11; surface points satisfy ‖∇f‖ > θ·w
   vol_sigmoid_beta: 100.0 # 1/T: sharpness of the soft switch in L_vol (Eq. 15)
   smo_k1: 26              # k₁ neighbors for finite-difference gradients (Eq. 13)
   smo_k2: 6               # k₂ nearest surface neighbors (Eq. 14)
   n_smo_samples: 1024     # max surface candidates per step (cost cap for L_smo)
+  beta_con: 0.1          # connectivity: penalize occupied mass unreachable from the main body
+  con_grid: 48            # coarse grid resolution for the soft flood fill
+  con_every: 20           # evaluate L_con every N steps (global-grid term)
+  con_start_epoch: 3     # activate once the shape exists and L_vol has shrunk it
 
 train:
   epochs: 30
@@ -33,7 +37,7 @@ train:
   seed: 42
   checkpoint_every: 5   # save checkpoint every N epochs
   log_every: 10         # print loss every N steps
-  use_registration: false  # enable ICP registration for incompatible silhouettes
+  use_registration: true  # enable ICP registration for incompatible silhouettes
   registration_every: 5    # run registration every N epochs (paper Sec. 3.3)
 
 mesh:

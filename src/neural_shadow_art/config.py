@@ -40,6 +40,14 @@ class LossConfig:
     smo_k1: int = 26           # paper: k₁ neighbors for finite-difference gradients (Eq. 13)
     smo_k2: int = 6            # paper: k₂ nearest surface neighbors (Eq. 14)
     n_smo_samples: int = 1024  # max surface candidates per step (cost cap for L_smo)
+    # Connectivity loss L_con (not in the paper — see
+    # research_papers/3d_print_improvements.md, Option 2): soft flood-fill
+    # reachability on a coarse global grid; occupied mass unreachable from the
+    # largest component is penalized, so stragglers connect or vanish.
+    beta_con: float = 0.01     # weight on the steps where L_con is evaluated
+    con_grid: int = 48         # coarse grid resolution per axis (memory ~ con_grid⁴)
+    con_every: int = 20        # evaluate L_con every N steps (global term — no need per batch)
+    con_start_epoch: int = 5   # inactive before this epoch (after L_vol has shrunk the shape)
 
 
 @dataclass

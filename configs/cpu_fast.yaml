@@ -23,6 +23,10 @@ loss:
   smo_k1: 26
   smo_k2: 6
   n_smo_samples: 256
+  beta_con: 0.01
+  con_grid: 32            # 32³ keeps the flood fill cheap on CPU
+  con_every: 20
+  con_start_epoch: 5
 
 train:
   epochs: 20

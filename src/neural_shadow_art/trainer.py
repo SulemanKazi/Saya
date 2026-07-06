@@ -14,6 +14,7 @@ from .losses import (
     LossScheduler,
     loss_binarization,
     loss_cohesion,
+    loss_connectivity,
     loss_rendering,
     loss_smoothness,
     loss_volume,
@@ -63,6 +64,10 @@ class Trainer:
         self._bbox_min = torch.tensor(cfg.render.bbox_min, device=self.device)
         self._bbox_max = torch.tensor(cfg.render.bbox_max, device=self.device)
 
+        # Global step counter — sets the cadence of the periodic L_con term.
+        self._global_step = 0
+        self._con_coords: Optional[torch.Tensor] = None  # lazy coarse-grid cache
+
         # Training targets: the (possibly registered) view masks. Registration
         # replaces these periodically; the originals stay in the dataset.
         self.targets = [
@@ -103,6 +108,33 @@ class Trainer:
         v = row / (H - 1) * 2.0 - 1.0
         coords = torch.stack([u, v], dim=1)
         return coords, indices
+
+    def _connectivity_loss(
+        self, light_dirs: torch.Tensor, screen_normals: torch.Tensor
+    ) -> torch.Tensor:
+        """L_con on a coarse global grid (Option 2 of the printability notes).
+
+        Unlike the other losses, this queries the model on its own regular
+        grid rather than reusing batch ray samples. The grid is masked to the
+        frustum intersection (matching what mesh export keeps) so invisible
+        stray occupancy can neither be penalized nor chosen as the seed.
+        """
+        G = self.cfg.loss.con_grid
+        if self._con_coords is None:
+            axes = [
+                torch.linspace(lo, hi, G, device=self.device)
+                for lo, hi in zip(self.cfg.render.bbox_min, self.cfg.render.bbox_max)
+            ]
+            grid = torch.meshgrid(*axes, indexing="ij")
+            self._con_coords = torch.stack(grid, dim=-1).reshape(-1, 3)
+
+        occ = self.model.occupancy(self._con_coords).squeeze(-1)
+        if self.cfg.render.frustum_truncation and self.dataset.n_views > 1:
+            inside = self.ray_gen.points_in_frustums(
+                self._con_coords, light_dirs.detach(), screen_normals.detach()
+            )
+            occ = occ * inside.float()
+        return loss_connectivity(occ.reshape(G, G, G))
 
     def _train_step(self, epoch: int) -> dict[str, float]:
         self.model.train()
@@ -162,7 +194,7 @@ class Trainer:
             # configuration) — nothing differentiable to optimize this step.
             zero = 0.0
             return {"total": zero, "ren": zero, "coh": zero,
-                    "smo": zero, "vol": zero, "bin": zero}
+                    "smo": zero, "vol": zero, "bin": zero, "con": zero}
 
         # --- Cohesion loss (L_coh, Eq. 10) ---
         l_coh = loss_cohesion(sample_occ)
@@ -186,18 +218,28 @@ class Trainer:
         else:
             l_smo = torch.tensor(0.0, device=self.device)
 
+        # --- Connectivity loss (L_con) — a global coarse-grid term, evaluated
+        # every con_every steps rather than per batch (it sees the whole field,
+        # so per-batch evaluation would only add cost, not signal).
+        if weights["con"] > 0 and self._global_step % self.cfg.loss.con_every == 0:
+            l_con = self._connectivity_loss(light_dirs, screen_normals)
+        else:
+            l_con = torch.tensor(0.0, device=self.device)
+
         loss_terms = {
             "ren": l_ren,
             "coh": l_coh,
             "smo": l_smo,
             "vol": l_vol,
             "bin": l_bin,
+            "con": l_con,
         }
         total_loss = self.scheduler.compute_total_loss(epoch, loss_terms)
 
         self.optimizer.zero_grad()
         total_loss.backward()
         self.optimizer.step()
+        self._global_step += 1
 
         return {
             "total": total_loss.item(),
@@ -255,12 +297,17 @@ class Trainer:
                 k: sum(d[k] for d in epoch_losses) / len(epoch_losses)
                 for k in epoch_losses[0]
             }
+            # L_con only fires every con_every steps — average over those
+            # steps, not the whole epoch, so the printed value is comparable.
+            con_vals = [d["con"] for d in epoch_losses if d["con"] != 0.0]
+            avg["con"] = sum(con_vals) / len(con_vals) if con_vals else 0.0
             elapsed = time.time() - t0
             print(
                 f"Epoch {epoch + 1:3d}/{cfg.epochs} | "
                 f"loss={avg['total']:.4f}  ren={avg['ren']:.4f}  "
                 f"coh={avg['coh']:.4f}  smo={avg['smo']:.4f}  "
-                f"vol={avg['vol']:.4f}  bin={avg['bin']:.4f} | "
+                f"vol={avg['vol']:.4f}  bin={avg['bin']:.4f}  "
+                f"con={avg['con']:.4f} | "
                 f"{elapsed:.1f}s"
             )
 

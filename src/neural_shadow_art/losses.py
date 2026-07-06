@@ -180,6 +180,77 @@ def loss_volume(
     return (sample_weights * soft).sum() / n_rays
 
 
+def loss_connectivity(
+    occ_grid: Tensor,
+    threshold: float = 0.5,
+    n_iters: int | None = None,
+    eps: float = 1e-8,
+) -> Tensor:
+    """Soft flood-fill connectivity loss (L_con) on a coarse occupancy grid.
+
+    Penalizes occupied mass that is not reachable from the main body, so
+    stragglers must either connect or vanish — organic connections form
+    during training instead of post-hoc struts (see
+    research_papers/3d_print_improvements.md, Option 2).
+
+    Reachability r is seeded on the largest connected component of the
+    hard-thresholded field (computed detached — the seed choice is a
+    constant w.r.t. autograd) and spread one voxel per iteration:
+
+        r ← max(maxpool3d(r · f, 3×3×3), seed)
+
+    Multiplying by the occupancy f *before* pooling gates the spread through
+    occupied space while keeping the fill differentiable, and means a voxel's
+    reachability reflects only the path leading to it, not its own softness
+    (a soft surface voxel adjacent to reached solid interior gets r ≈ 1 and
+    is not penalized). Pinning the seed at 1 makes r monotone in the
+    iteration count. The loss is the occupied-but-unreachable fraction
+
+        L_con = Σ f·(1 − r) / (Σ f + ε)  ∈ [0, 1].
+
+    Gradients both shrink disconnected mass (∂L/∂f > 0 on stragglers) and
+    grow bridges: raising f along a partially-occupied corridor toward the
+    main body raises r over the entire straggler, so ∂L/∂f < 0 there.
+
+    Args:
+        occ_grid: (G, G, G) occupancy field sampled on a regular grid,
+            with autograd graph attached.
+        threshold: occupancy level defining solid voxels for seeding.
+        n_iters: flood-fill iterations; None → the grid diameter (max dim).
+        eps: guards the division for a near-empty field.
+    Returns:
+        Scalar loss.
+    """
+    from scipy import ndimage
+
+    if n_iters is None:
+        n_iters = max(occ_grid.shape)
+
+    # Seed: largest connected component of the thresholded field (6-conn),
+    # falling back to the single most-occupied voxel when nothing clears the
+    # threshold. Seeding a whole component (not an argmax voxel) keeps the
+    # seed stable across steps — argmax can jump between blobs.
+    hard = (occ_grid.detach() >= threshold).cpu().numpy()
+    seed = torch.zeros_like(occ_grid)
+    if hard.any():
+        labels, n_comp = ndimage.label(hard)
+        if n_comp > 1:
+            sizes = ndimage.sum_labels(hard, labels, index=range(1, n_comp + 1))
+            hard = labels == (int(sizes.argmax()) + 1)
+        seed[torch.from_numpy(hard).to(occ_grid.device)] = 1.0
+    else:
+        seed.view(-1)[int(occ_grid.detach().argmax())] = 1.0
+
+    f = occ_grid[None, None]  # (1, 1, G, G, G) for max_pool3d
+    seed = seed[None, None]
+    r = seed
+    for _ in range(n_iters):
+        r = torch.maximum(F.max_pool3d(r * f, kernel_size=3, stride=1, padding=1), seed)
+    r = r[0, 0]
+
+    return (occ_grid * (1.0 - r)).sum() / (occ_grid.sum() + eps)
+
+
 def loss_binarization(occ: Tensor) -> Tensor:
     """Force occupancy toward binary values by penalizing intermediate values.
 
@@ -202,6 +273,9 @@ class LossScheduler:
       starting from epoch 0, encouraging solid binary geometry early.
     - β_smo (smoothness) and β_vol (volume) are suppressed for epochs 0–2
       (paper's first 3 epochs, 1-indexed), then activated at full weight.
+    - β_con (connectivity, not in the paper) is suppressed until
+      con_start_epoch — the shape must exist, and L_vol should have done
+      most of its shrinking, before connectivity is meaningful.
     """
 
     def __init__(self, cfg: LossConfig):
@@ -216,6 +290,7 @@ class LossScheduler:
             "smo": 0.0 if epoch < 3 else self.cfg.beta_smo,
             "vol": 0.0 if epoch < 3 else self.cfg.beta_vol,
             "bin": self.cfg.beta_bin * scale_early,
+            "con": 0.0 if epoch < self.cfg.con_start_epoch else self.cfg.beta_con,
         }
 
     def compute_total_loss(
